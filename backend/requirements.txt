@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+pydantic-settings
+python-dotenv
+sqlalchemy
+pymupdf
+markdown
+jieba
+rank-bm25
+numpy
+faiss-cpu
+sentence-transformers
+httpx
+pytest
+
