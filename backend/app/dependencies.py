@@ -88,7 +88,7 @@ def get_grading_tool() -> GradingTool:
 
 def get_agent_service() -> AgentService:
     return AgentService(
-        router=RouterAgent(),
+        router=RouterAgent(get_llm_client()),
         qa_tool=get_qa_tool(),
         summary_tool=get_summary_tool(),
         quiz_tool=get_quiz_tool(),

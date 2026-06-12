@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 TaskTypeValue = Literal["auto", "qa", "summary", "quiz", "grade"]
 ConfidenceValue = Literal["high", "medium", "low"]
+RetrievalProfileValue = Literal["default", "qa", "summary"]
 
 
 class RawPage(BaseModel):
@@ -77,3 +78,12 @@ class ChatResponse(BaseModel):
     sources: list[RetrievedChunk]
     confidence: ConfidenceValue
     message: str | None = None
+
+
+class AgentDecision(BaseModel):
+    task_type: Literal["qa", "summary", "quiz", "grade"]
+    retrieval_profile: RetrievalProfileValue = "qa"
+    rewritten_query: str | None = None
+    needs_pro_model: bool = False
+    confidence: ConfidenceValue = "medium"
+    reason: str | None = None

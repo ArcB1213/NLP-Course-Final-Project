@@ -20,12 +20,14 @@ class SummaryTool:
         query: str,
         use_pro_model: bool = False,
         top_k: int | None = None,
+        retrieval_query: str | None = None,
+        retrieval_profile: str = "summary",
     ) -> ChatResponse:
         chunks = self.retriever.retrieve(
             db,
-            query,
+            retrieval_query or query,
             top_k or self.settings.summary_final_top_k,
-            profile="summary",
+            profile=retrieval_profile,
         )
         confidence = estimate_confidence(chunks)
         prompt = build_summary_prompt(query, chunks)

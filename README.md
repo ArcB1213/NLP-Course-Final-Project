@@ -50,6 +50,7 @@ GET http://localhost:8000/api/health
 - 规则型 `RouterAgent`
 - `QATool`、`SummaryTool`、`QuizTool`、`GradingTool`
 - 统一 `AgentService` 调度入口
+- `task_type=auto` 时使用 LLM Router Agent 决策任务类型和检索 query
 
 ## 检索配置
 
@@ -75,6 +76,15 @@ BM25_WEIGHT=0.4
 - `qa`：精确检索，候选较少，适合回答具体问题。
 - `summary`：扩展多个主题 query，召回更多片段，并做来源多样性筛选，适合知识点梳理。
 - `default`：用于普通检索调试，行为接近基础混合检索。
+
+## Agent 路由
+
+`/api/chat` 支持两种路由方式：
+
+- 显式任务：前端或调用方传 `task_type="qa" / "summary" / "quiz" / "grade"`，系统尊重用户选择。
+- 自动任务：传 `task_type="auto"`，系统调用 DeepSeek Flash 作为 Router Agent，输出任务类型、检索策略和改写后的检索 query。
+
+如果 LLM Router 调用失败或输出无法解析，系统会自动回退到规则路由，保证接口可用。
 
 ## 接口测试
 

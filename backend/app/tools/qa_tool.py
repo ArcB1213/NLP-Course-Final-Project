@@ -20,12 +20,14 @@ class QATool:
         query: str,
         use_pro_model: bool = False,
         top_k: int | None = None,
+        retrieval_query: str | None = None,
+        retrieval_profile: str = "qa",
     ) -> ChatResponse:
         chunks = self.retriever.retrieve(
             db,
-            query,
+            retrieval_query or query,
             top_k or self.settings.final_top_k,
-            profile="qa",
+            profile=retrieval_profile,
         )
         confidence = estimate_confidence(chunks)
         if confidence == "low":
