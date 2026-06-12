@@ -78,3 +78,36 @@ Content-Type: application/json
   "use_pro_model": false
 }
 ```
+
+自动路由出题请求示例：
+
+```http
+POST /api/chat
+Content-Type: application/json
+
+{
+  "query": "围绕 HMM 和 CRF 的区别出三道题",
+  "task_type": "auto",
+  "use_pro_model": false
+}
+```
+
+批改请求示例：
+
+```http
+POST /api/chat
+Content-Type: application/json
+
+{
+  "query": "题目：CRF 和 HMM 有什么区别？\n我的答案：HMM 是生成式模型，CRF 是判别式模型。",
+  "task_type": "grade"
+}
+```
+
+`task_type` 支持：
+
+- `auto`
+- `qa`
+- `summary`
+- `quiz`
+- `grade`

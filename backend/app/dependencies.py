@@ -1,14 +1,18 @@
 from functools import lru_cache
 
 from app.config import get_settings
+from app.core.agent_service import AgentService
 from app.core.llm_client import DeepSeekClient
+from app.core.router_agent import RouterAgent
 from app.document.ingestion import IngestionService
 from app.retrieval.bm25_store import BM25Store
 from app.retrieval.embedder import Embedder
 from app.retrieval.reranker import Reranker
 from app.retrieval.retriever import HybridRetriever
 from app.retrieval.vector_store import FaissVectorStore
+from app.tools.grading_tool import GradingTool
 from app.tools.qa_tool import QATool
+from app.tools.quiz_tool import QuizTool
 from app.tools.summary_tool import SummaryTool
 
 
@@ -72,3 +76,21 @@ def get_qa_tool() -> QATool:
 
 def get_summary_tool() -> SummaryTool:
     return SummaryTool(get_vector_retriever(), get_llm_client(), get_settings())
+
+
+def get_quiz_tool() -> QuizTool:
+    return QuizTool(get_vector_retriever(), get_llm_client(), get_settings())
+
+
+def get_grading_tool() -> GradingTool:
+    return GradingTool(get_vector_retriever(), get_llm_client(), get_settings())
+
+
+def get_agent_service() -> AgentService:
+    return AgentService(
+        router=RouterAgent(),
+        qa_tool=get_qa_tool(),
+        summary_tool=get_summary_tool(),
+        quiz_tool=get_quiz_tool(),
+        grading_tool=get_grading_tool(),
+    )

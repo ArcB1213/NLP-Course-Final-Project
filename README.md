@@ -35,7 +35,7 @@ GET http://localhost:8000/api/health
 
 ## 当前阶段
 
-已覆盖阶段 0-3：
+已覆盖阶段 0-4 后端部分：
 
 - FastAPI 后端骨架
 - PDF / Markdown / TXT 上传、解析、分块、入库
@@ -47,6 +47,9 @@ GET http://localhost:8000/api/health
 - 引用来源返回
 - `/api/search` 检索调试接口
 - 低置信度问答拒答
+- 规则型 `RouterAgent`
+- `QATool`、`SummaryTool`、`QuizTool`、`GradingTool`
+- 统一 `AgentService` 调度入口
 
 ## 检索配置
 
@@ -124,6 +127,27 @@ $body = @{
 Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
 ```
 
+自动任务路由：
+
+```powershell
+$body = @{
+  query = "围绕 HMM 和 CRF 的区别出三道题"
+  task_type = "auto"
+  use_pro_model = $false
+} | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
+```
+
+答案批改：
+
+```powershell
+$body = @{
+  query = "题目：CRF 和 HMM 有什么区别？`n我的答案：HMM 是生成式模型，CRF 是判别式模型。"
+  task_type = "grade"
+} | ConvertTo-Json
+Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
+```
+
 也可以打开 Swagger 页面测试：
 
 ```text
@@ -132,10 +156,10 @@ http://localhost:8000/docs
 
 ## 下一步
 
-阶段 4 将实现任务型 Agent：
+后续可继续补充：
 
-- `RouterAgent`
-- `SummaryTool`
-- `QuizTool`
-- `GradingTool`
-- 统一 `AgentService`
+- 前端界面
+- Quiz / Grade 专用检索 profile
+- RAG 评测集和检索指标
+- OCR 文档支持
+- 智能体多轮记忆
