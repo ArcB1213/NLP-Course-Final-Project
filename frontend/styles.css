@@ -384,6 +384,23 @@ body.resizing { cursor: col-resize; user-select: none; }
   border-top: 1px solid var(--border);
   margin: 0.6em 0;
 }
+.msg.agent .bubble .katex-display {
+  margin: 0.75em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.2em 0;
+}
+.msg.agent .bubble .katex {
+  color: inherit;
+  font-size: 1.05em;
+}
+.msg.agent .bubble[data-render-error]::after {
+  content: attr(data-render-error);
+  display: block;
+  margin-top: 8px;
+  color: var(--danger);
+  font-size: 12px;
+}
 
 .confidence-tag {
   display: inline-block;
@@ -395,6 +412,95 @@ body.resizing { cursor: col-resize; user-select: none; }
 .confidence-tag.high { background: rgba(74, 214, 163, .15); color: var(--accent-2); }
 .confidence-tag.medium { background: rgba(245, 162, 93, .18); color: var(--warn); }
 .confidence-tag.low { background: rgba(227, 100, 100, .18); color: var(--danger); }
+
+.agent-trace {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+}
+.agent-trace > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 600;
+  list-style: none;
+}
+.agent-trace > summary::-webkit-details-marker { display: none; }
+.agent-trace > summary::before {
+  content: ">";
+  color: var(--accent);
+  transition: transform .15s;
+}
+.agent-trace[open] > summary::before { transform: rotate(90deg); }
+.agent-trace > summary > span:first-child { margin-right: auto; }
+.trace-count {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-weight: 400;
+}
+.trace-timeline {
+  margin: 10px 0 2px 7px;
+  padding-left: 16px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.trace-step {
+  position: relative;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.trace-step::before {
+  content: "";
+  position: absolute;
+  left: -22px;
+  top: 12px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--bg-card);
+}
+.trace-retrieve::before,
+.trace-retrieve_retry::before { background: #9b7bff; }
+.trace-judge_evidence::before { background: var(--accent-2); }
+.trace-step.failed::before { background: var(--danger); }
+.trace-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.trace-status {
+  border-radius: 8px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 400;
+}
+.trace-status.ok { color: var(--accent-2); background: rgba(74, 214, 163, .12); }
+.trace-status.failed { color: var(--danger); background: rgba(227, 100, 100, .12); }
+.trace-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 10px;
+  margin: 7px 0 0;
+}
+.trace-fields dt { color: var(--text-soft); }
+.trace-fields dd {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.trace-message { margin-top: 6px; color: var(--danger); }
 
 .sources {
   margin-top: 6px;
@@ -415,9 +521,42 @@ body.resizing { cursor: col-resize; user-select: none; }
 .sources .src-text {
   margin-top: 6px;
   color: var(--text);
-  white-space: pre-wrap;
   max-height: 200px;
   overflow-y: auto;
+  line-height: 1.55;
+}
+.sources .src-text > *:first-child { margin-top: 0; }
+.sources .src-text > *:last-child { margin-bottom: 0; }
+.sources .src-text p { margin: 0.4em 0; }
+.sources .src-text ul,
+.sources .src-text ol { margin: 0.4em 0; padding-left: 1.5em; }
+.sources .src-text h1,
+.sources .src-text h2,
+.sources .src-text h3,
+.sources .src-text h4 {
+  margin: 0.65em 0 0.3em;
+  line-height: 1.3;
+}
+.sources .src-text h1 { font-size: 1.25em; }
+.sources .src-text h2 { font-size: 1.15em; }
+.sources .src-text h3,
+.sources .src-text h4 { font-size: 1.05em; }
+.sources .src-text code {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+.sources .src-text pre {
+  overflow-x: auto;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+.sources .src-text .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .chat-form {

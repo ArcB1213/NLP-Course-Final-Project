@@ -1,5 +1,69 @@
 const API_BASE = "/api";
 
+const RENDER_DEPENDENCIES = {
+  marked: [
+    "https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js",
+    "https://unpkg.com/marked@12.0.2/marked.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js",
+  ],
+  DOMPurify: [
+    "https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js",
+    "https://unpkg.com/dompurify@3.1.5/dist/purify.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.5/purify.min.js",
+  ],
+  katex: [
+    "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js",
+    "https://unpkg.com/katex@0.16.11/dist/katex.min.js",
+    "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js",
+  ],
+};
+
+const KATEX_STYLES = [
+  "https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css",
+  "https://unpkg.com/katex@0.16.11/dist/katex.min.css",
+  "https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css",
+];
+
+function loadScriptFromSources(globalName, sources) {
+  if (window[globalName]) return Promise.resolve();
+  return sources.reduce(
+    (attempt, source) => attempt.catch(() => new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = source;
+      script.onload = () => window[globalName] ? resolve() : reject(new Error(`${globalName} 未导出`));
+      script.onerror = () => reject(new Error(`无法加载 ${source}`));
+      document.head.appendChild(script);
+    })),
+    Promise.reject(new Error(`${globalName} 尚未加载`)),
+  );
+}
+
+function loadStylesheetFromSources(sources) {
+  return sources.reduce(
+    (attempt, source) => attempt.catch(() => new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = source;
+      link.onload = resolve;
+      link.onerror = () => reject(new Error(`无法加载 ${source}`));
+      document.head.appendChild(link);
+    })),
+    Promise.reject(new Error("KaTeX 样式尚未加载")),
+  );
+}
+
+const rendererReady = Promise.all([
+  loadScriptFromSources("marked", RENDER_DEPENDENCIES.marked),
+  loadScriptFromSources("DOMPurify", RENDER_DEPENDENCIES.DOMPurify),
+  loadScriptFromSources("katex", RENDER_DEPENDENCIES.katex),
+  loadStylesheetFromSources(KATEX_STYLES),
+]).then(() => {
+  window.marked.setOptions({ breaks: true, gfm: true });
+}).catch((error) => {
+  console.error("Markdown/LaTeX 渲染依赖加载失败", error);
+  throw error;
+});
+
 // ---- Resizable layout ----
 const LAYOUT_KEY = "course-rag-layout";
 const layout = document.querySelector(".layout");
@@ -135,6 +199,13 @@ const chatForm = document.getElementById("chat-form");
 const chatInput = document.getElementById("chat-input");
 const chatLog = document.getElementById("chat-log");
 const chatSend = document.getElementById("chat-send");
+const traceToggle = document.getElementById("show-agent-trace");
+const TRACE_PREF_KEY = "course-rag-show-agent-trace";
+
+traceToggle.checked = localStorage.getItem(TRACE_PREF_KEY) !== "false";
+traceToggle.addEventListener("change", () => {
+  localStorage.setItem(TRACE_PREF_KEY, String(traceToggle.checked));
+});
 
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -150,6 +221,7 @@ chatForm.addEventListener("submit", async (e) => {
   const taskType = document.getElementById("task-type").value;
   const topK = parseInt(document.getElementById("chat-topk").value, 10) || 5;
   const usePro = document.getElementById("use-pro").checked;
+  const showAgentTrace = traceToggle.checked;
 
   const tip = chatLog.querySelector(".empty-tip");
   if (tip) tip.remove();
@@ -162,7 +234,13 @@ chatForm.addEventListener("submit", async (e) => {
   agentMsg.bubble.innerHTML = '<span class="spinner"></span> 思考中...';
 
   try {
-    await streamChat({ query, task_type: taskType, use_pro_model: usePro, top_k: topK }, agentMsg);
+    await streamChat({
+      query,
+      task_type: taskType,
+      use_pro_model: usePro,
+      top_k: topK,
+      extra_context: { debug_agent_trace: showAgentTrace },
+    }, agentMsg);
   } catch (err) {
     agentMsg.bubble.textContent = `请求失败：${err.message}`;
   } finally {
@@ -186,17 +264,64 @@ function appendMessage(role, text) {
   return { wrap, meta, bubble };
 }
 
-if (window.marked && typeof window.marked.setOptions === "function") {
-  window.marked.setOptions({ breaks: true, gfm: true });
+function extractMath(text) {
+  const expressions = [];
+  const codePattern = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g;
+  const source = String(text || "")
+    .split(codePattern)
+    .map((part, index) => {
+      if (index % 2 === 1) return part;
+      return part
+        .replace(/\\\[([\s\S]*?)\\\]|\$\$([\s\S]*?)\$\$/g, (_, bracketed, dollars) => {
+          const mathIndex = expressions.push({ expression: bracketed ?? dollars, display: true }) - 1;
+          return `\n<div class="math-placeholder math-display" data-math-index="${mathIndex}"></div>\n`;
+        })
+        .replace(/\\\(([^\n]*?)\\\)|\$(?!\$)([^\n$]+?)\$/g, (_, parenthesized, dollars) => {
+          const mathIndex = expressions.push({ expression: parenthesized ?? dollars, display: false }) - 1;
+          return `<span class="math-placeholder" data-math-index="${mathIndex}"></span>`;
+        });
+    })
+    .join("");
+  return { source, expressions };
 }
 
+function renderMathPlaceholders(target, expressions) {
+  target.querySelectorAll("[data-math-index]").forEach((element) => {
+    const item = expressions[Number(element.dataset.mathIndex)];
+    if (!item) return;
+    window.katex.render(item.expression, element, {
+      displayMode: item.display,
+      throwOnError: false,
+      strict: "ignore",
+      trust: false,
+    });
+  });
+}
+
+const pendingMarkdown = new WeakMap();
+
 function renderMarkdown(target, text) {
-  if (window.marked && window.DOMPurify) {
-    const html = window.marked.parse(text || "");
-    target.innerHTML = window.DOMPurify.sanitize(html);
-  } else {
+  const renderVersion = {};
+  pendingMarkdown.set(target, renderVersion);
+
+  if (!window.marked || !window.DOMPurify || !window.katex) {
     target.textContent = text || "";
+    rendererReady.then(() => {
+      if (pendingMarkdown.get(target) === renderVersion) renderMarkdown(target, text);
+    }).catch(() => {
+      if (pendingMarkdown.get(target) === renderVersion) {
+        target.dataset.renderError = "Markdown/LaTeX 渲染组件加载失败";
+      }
+    });
+    return;
   }
+
+  const { source, expressions } = extractMath(text);
+  const html = window.marked.parse(source);
+  target.innerHTML = window.DOMPurify.sanitize(html, {
+    ADD_ATTR: ["data-math-index"],
+  });
+  renderMathPlaceholders(target, expressions);
 }
 
 async function streamChat(payload, agentMsg) {
@@ -245,6 +370,9 @@ async function streamChat(payload, agentMsg) {
         } else {
           renderMarkdown(agentMsg.bubble, answerText);
         }
+        if (metaInfo && metaInfo.agent_trace && metaInfo.agent_trace.steps?.length) {
+          agentMsg.bubble.appendChild(renderAgentTrace(metaInfo.agent_trace));
+        }
         if (metaInfo && metaInfo.sources && metaInfo.sources.length) {
           agentMsg.bubble.appendChild(renderSources(metaInfo.sources));
         }
@@ -261,6 +389,128 @@ function renderMetaLine(meta) {
   return parts.join(" ");
 }
 
+const TRACE_STEP_LABELS = {
+  route: "任务路由",
+  plan: "任务规划",
+  retrieve: "首次检索",
+  judge_evidence: "证据判断",
+  retrieve_retry: "二次检索",
+  tool_generate: "工具生成",
+  tool_stream: "流式生成",
+};
+
+function renderAgentTrace(trace) {
+  const steps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const panel = document.createElement("details");
+  panel.className = "agent-trace";
+
+  const summary = document.createElement("summary");
+  summary.innerHTML = `<span>Agent 决策过程</span><span class="trace-count">${steps.length} 步</span>`;
+  panel.appendChild(summary);
+
+  const timeline = document.createElement("div");
+  timeline.className = "trace-timeline";
+  steps.forEach((step, index) => timeline.appendChild(renderAgentStep(step, index)));
+  panel.appendChild(timeline);
+  return panel;
+}
+
+function renderAgentStep(step, index) {
+  const item = document.createElement("section");
+  const status = step.status === "failed" ? "failed" : "ok";
+  item.className = `trace-step trace-${step.step_type || "unknown"} ${status}`;
+
+  const header = document.createElement("div");
+  header.className = "trace-step-header";
+  const title = document.createElement("strong");
+  title.textContent = `${index + 1}. ${TRACE_STEP_LABELS[step.step_type] || step.step_type || "未知步骤"}`;
+  const badge = document.createElement("span");
+  badge.className = `trace-status ${status}`;
+  badge.textContent = status === "failed" ? "失败" : "完成";
+  header.append(title, badge);
+  item.appendChild(header);
+
+  const fields = traceStepFields(step);
+  if (fields.length) {
+    const grid = document.createElement("dl");
+    grid.className = "trace-fields";
+    fields.forEach(([label, value]) => {
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const description = document.createElement("dd");
+      description.textContent = formatTraceValue(value);
+      grid.append(term, description);
+    });
+    item.appendChild(grid);
+  }
+
+  if (step.message) {
+    const message = document.createElement("div");
+    message.className = "trace-message";
+    message.textContent = step.message;
+    item.appendChild(message);
+  }
+  return item;
+}
+
+function traceStepFields(step) {
+  const input = step.input || {};
+  const output = step.output || {};
+  if (step.step_type === "route") {
+    return [
+      ["任务类型", output.task_type],
+      ["检索策略", output.retrieval_profile],
+      ["改写 Query", output.rewritten_query],
+      ["路由原因", output.reason],
+      ["使用 Pro", output.needs_pro_model],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  }
+  if (step.step_type === "plan") {
+    const subtasks = Array.isArray(output.subtasks) ? output.subtasks : [];
+    return [
+      ["子任务数", subtasks.length],
+      ["子任务", subtasks.map((task) => `${task.task_type}: ${task.query}`).join("\n")],
+    ];
+  }
+  if (step.step_type === "retrieve" || step.step_type === "retrieve_retry") {
+    return [
+      ["Query", input.queries],
+      ["检索策略", input.profile],
+      ["Top K", input.top_k],
+      ["片段数量", output.chunk_count],
+      ["置信度", output.confidence],
+    ].filter(([, value]) => value !== undefined && value !== null);
+  }
+  if (step.step_type === "judge_evidence") {
+    return [
+      ["证据充分", output.is_sufficient],
+      ["判断原因", output.reason],
+      ["建议 Query", output.suggested_queries],
+      ["建议策略", output.suggested_profile],
+      ["建议拒答", output.should_refuse],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  }
+  if (step.step_type === "tool_generate" || step.step_type === "tool_stream") {
+    return [
+      ["工具", input.tool],
+      ["Query", input.query],
+      ["置信度", output.confidence],
+      ["消息", output.message],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  }
+  return [
+    ["输入", input],
+    ["输出", output],
+  ];
+}
+
+function formatTraceValue(value) {
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (Array.isArray(value)) return value.length ? value.join("\n") : "无";
+  if (value && typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value ?? "无");
+}
+
 function renderSources(sources) {
   const wrap = document.createElement("div");
   wrap.className = "sources";
@@ -272,7 +522,7 @@ function renderSources(sources) {
     sum.textContent = `[${i + 1}] ${label}  (score ${score})`;
     const body = document.createElement("div");
     body.className = "src-text";
-    body.textContent = s.text;
+    renderMarkdown(body, s.text);
     det.appendChild(sum);
     det.appendChild(body);
     wrap.appendChild(det);

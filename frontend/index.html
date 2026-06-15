@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Course RAG Agent</title>
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=20260615-4" />
 </head>
 <body>
   <header class="topbar">
@@ -79,11 +79,13 @@
         <input id="use-pro" type="checkbox" />
         <span>使用 Pro 模型</span>
       </label>
+      <label class="setting checkbox">
+        <input id="show-agent-trace" type="checkbox" checked />
+        <span>显示 Agent 决策过程</span>
+      </label>
     </aside>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js"></script>
-  <script src="./app.js"></script>
+  <script defer src="./app.js?v=20260615-4"></script>
 </body>
 </html>
