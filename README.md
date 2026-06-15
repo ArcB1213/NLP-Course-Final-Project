@@ -60,11 +60,13 @@ http://localhost:8000/
 - `RouterAgent`：显式任务优先，`task_type=auto` 时使用 LLM 判断任务类型、检索策略和改写 query
 - `AgentPlanner`：自动模式下可将复合请求拆成多个子任务，例如“总结 + 出题”
 - `EvidenceJudge`：检索后判断证据是否充分，不足时触发二次 query 改写与再检索
+- `SummaryCoveragePlanner`：总结任务会先规划复习子主题，并最多进行 3 轮覆盖式检索
 - `AgentTrace`：可选返回路由、规划、检索、证据判断、工具调用等决策过程
 - `QATool`、`SummaryTool`、`QuizTool`、`GradingTool`
-- 统一 `AgentService` 调度入口：`route -> plan -> retrieve -> judge -> retry retrieve -> tool generate`
+- 统一 `AgentService` 调度入口：`route -> plan -> retrieve -> judge -> retry/coverage retrieve -> tool generate`
 - `/api/chat/stream` SSE 流式输出，前端逐字渲染
 - DeepSeek 输出被截断时自动续写，降低回答停在半句话的问题
+- 删除文档后显式清理分块和孤儿 chunk，避免旧资料继续污染检索结果
 - 单页前端（HTML + 原生 JS），由 FastAPI 静态托管
 
 ## 检索配置
@@ -89,7 +91,7 @@ BM25_WEIGHT=0.4
 系统现在会在检索阶段区分问答和总结：
 
 - `qa`：精确检索，候选较少，适合回答具体问题。
-- `summary`：扩展多个主题 query，召回更多片段，并做来源多样性筛选，适合知识点梳理。
+- `summary`：使用复习覆盖规划器生成子主题 query，最多进行 3 轮覆盖式检索，并做来源和内容多样性筛选，适合知识点梳理。
 - `default`：用于普通检索调试，行为接近基础混合检索。
 
 ## Agentic RAG 流程
@@ -103,11 +105,11 @@ RouterAgent 判断任务类型、检索 profile、改写 query
   ↓
 AgentPlanner 判断是否需要拆成多个子任务
   ↓
-HybridRetriever 初次检索
+HybridRetriever 初次检索 / Summary 覆盖检索
   ↓
-EvidenceJudge 判断证据是否充分
+EvidenceJudge 或 SummaryCoveragePlanner 判断证据是否充分
   ↓
-证据不足时进行 query 扩展 / 改写并二次检索
+证据不足时进行 query 扩展 / 改写并继续检索
   ↓
 调用 QA / Summary / Quiz / Grading 工具生成回答
   ↓
@@ -131,7 +133,7 @@ EvidenceJudge 判断证据是否充分
 }
 ```
 
-返回中的 `agent_trace.steps` 会记录 `route`、`plan`、`retrieve`、`judge_evidence`、`retrieve_retry`、`tool_generate` 等步骤。
+返回中的 `agent_trace.steps` 会记录 `route`、`plan`、`retrieve`、`judge_evidence`、`retrieve_retry`、`retrieve_round_1/2/3`、`summary_coverage_judge_*`、`summary_coverage_stop`、`tool_generate` 等步骤。
 
 ## 接口测试
 
@@ -177,7 +179,7 @@ RAG 总结：
 
 ```powershell
 $body = @{
-  query = "总结一下中文分词的主要方法"
+  query = "总结自动分词的主要知识"
   task_type = "summary"
   use_pro_model = $false
 } | ConvertTo-Json
@@ -221,7 +223,7 @@ Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType 
 
 ```powershell
 $body = @{
-  query = "总结一下中文分词的主要方法"
+  query = "总结自动分词的主要知识"
   task_type = "summary"
   top_k = 8
 } | ConvertTo-Json
@@ -244,6 +246,7 @@ http://localhost:8000/docs
 - RAG 评测集和检索指标
 - OCR 文档支持
 - 智能体多轮记忆
+- 章节级索引、Parent-Child 检索或文档目录结构解析，进一步增强长文档总结质量
 
 前端还需要重点改进：
 

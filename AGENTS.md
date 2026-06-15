@@ -40,6 +40,8 @@ Frontend code is plain JavaScript, HTML, and CSS. Keep it dependency-light and f
 
 Recent commits use Conventional Commit-style prefixes, for example `feat: improve summary coverage retrieval` and `feat(frontend): add markdown latex and agent trace`. Continue using `feat:`, `fix:`, `docs:`, `test:`, or scoped forms like `feat(prompts):`.
 
+When the user asks for a commit, assess whether the staged or intended changes materially affect setup, public behavior, APIs, user-facing workflows, architecture, or project status. Update `README.md` before committing when that documentation would otherwise become stale. If the user gives an explicit instruction about README updates, follow that instruction.
+
 Pull requests should include a concise summary, commands run, configuration changes, and screenshots or clips for frontend changes. Link related issues when available.
 
 ## Security & Configuration Tips
