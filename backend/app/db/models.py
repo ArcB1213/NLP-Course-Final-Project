@@ -46,3 +46,85 @@ class Chunk(Base):
 
     document: Mapped[Document] = relationship(back_populates="chunks")
 
+
+class ConversationSession(Base):
+    __tablename__ = "conversation_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    summary: Mapped["ConversationSummary | None"] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    task_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    session: Mapped[ConversationSession] = relationship(back_populates="messages")
+
+
+class ConversationSummary(Base):
+    __tablename__ = "conversation_summaries"
+
+    session_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversation_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    last_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    session: Mapped[ConversationSession] = relationship(back_populates="summary")
+
+
+class MemoryRecord(Base):
+    __tablename__ = "memory_records"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    importance: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
+    source_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    source_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

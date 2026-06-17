@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     upload_dir: Path = Path("./data/uploads")
     index_dir: Path = Path("./data/indexes")
+    memory_index_dir: Path = Path("./data/memory_indexes")
     sqlite_path: Path = Path("./data/sqlite/app.db")
 
     chunk_size: int = 500
@@ -34,6 +35,10 @@ class Settings(BaseSettings):
     request_timeout: float = 60.0
     max_upload_size_mb: int = 100
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    memory_enabled: bool = True
+    memory_recent_turns: int = 8
+    memory_summary_threshold: int = 12
+    memory_recall_top_k: int = 5
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -48,6 +53,7 @@ class Settings(BaseSettings):
     def ensure_dirs(self) -> None:
         self.upload_dir.mkdir(parents=True, exist_ok=True)
         self.index_dir.mkdir(parents=True, exist_ok=True)
+        self.memory_index_dir.mkdir(parents=True, exist_ok=True)
         self.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
 
 

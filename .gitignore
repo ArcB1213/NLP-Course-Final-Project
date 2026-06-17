@@ -7,6 +7,7 @@ venv/
 
 backend/data/uploads/*
 backend/data/indexes/*
+backend/data/memory_indexes/*
 backend/data/sqlite/*
 !backend/data/uploads/.gitkeep
 !backend/data/indexes/.gitkeep
@@ -18,4 +19,3 @@ backend/data/sqlite/*
 
 node_modules/
 dist/
-

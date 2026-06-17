@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator
 from sqlalchemy.orm import Session
 
 from app.core.evidence import EvidenceJudge
+from app.core.memory_service import LoadedMemoryContext, MemoryResolvedRequest, MemoryService
 from app.core.planner import AgentPlanner
 from app.core.router_agent import RouterAgent
 from app.core.schemas import (
@@ -45,6 +46,7 @@ class AgentService:
         planner: AgentPlanner | None = None,
         evidence_judge: EvidenceJudge | None = None,
         summary_coverage_planner: SummaryCoveragePlanner | None = None,
+        memory_service: MemoryService | None = None,
     ):
         self.router = router
         self.tools: dict[str, AgentTool] = {
@@ -57,10 +59,22 @@ class AgentService:
         self.planner = planner or AgentPlanner(router.llm)
         self.evidence_judge = evidence_judge or EvidenceJudge(router.llm)
         self.summary_coverage_planner = summary_coverage_planner or SummaryCoveragePlanner(router.llm)
+        self.memory_service = memory_service
 
     async def handle(self, db: Session, request: ChatRequest) -> ChatResponse:
-        state, prepared = await self._prepare(db, request)
+        memory_context, memory_resolution, working_request = await self._prepare_memory_context(db, request)
+        if memory_resolution.memory_only:
+            return await self._handle_memory_only(db, request, memory_context, memory_resolution)
+
+        state, prepared = await self._prepare(db, working_request)
         debug_trace = _debug_trace_enabled(request)
+        _append_memory_load_trace(state.trace, memory_context, memory_resolution)
+
+        if _should_fallback_to_memory(prepared, memory_resolution):
+            response = await self._memory_fallback_response(db, request, memory_context, memory_resolution, state.trace)
+            if debug_trace:
+                response.agent_trace = state.trace
+            return response
 
         responses: list[ChatResponse] = []
         for item in prepared:
@@ -85,24 +99,44 @@ class AgentService:
 
         if len(responses) == 1:
             response = responses[0]
+            response.session_id = memory_context.session_id
+            await self._remember_turn(db, request, response, memory_context.session_id, state.trace)
             if debug_trace:
                 response.agent_trace = state.trace
             return response
 
-        return ChatResponse(
+        response = ChatResponse(
             task_type="multi",
             answer=_format_multi_answer(responses),
             sources=_merge_chunks([chunk for response in responses for chunk in response.sources]),
             confidence=_aggregate_confidence([response.confidence for response in responses]),
             message=_aggregate_message([response.message for response in responses]),
+            session_id=memory_context.session_id,
             agent_trace=state.trace if debug_trace else None,
         )
+        await self._remember_turn(db, request, response, memory_context.session_id, state.trace)
+        if debug_trace:
+            response.agent_trace = state.trace
+        return response
 
     async def handle_stream(
         self, db: Session, request: ChatRequest
     ) -> AsyncIterator[dict[str, Any]]:
-        state, prepared = await self._prepare(db, request)
+        memory_context, memory_resolution, working_request = await self._prepare_memory_context(db, request)
+        if memory_resolution.memory_only:
+            async for event in self._handle_memory_only_stream(db, request, memory_context, memory_resolution):
+                yield event
+            return
+
+        state, prepared = await self._prepare(db, working_request)
         debug_trace = _debug_trace_enabled(request)
+        _append_memory_load_trace(state.trace, memory_context, memory_resolution)
+
+        if _should_fallback_to_memory(prepared, memory_resolution):
+            async for event in self._memory_fallback_stream(db, request, memory_context, memory_resolution, state.trace):
+                yield event
+            return
+
         all_sources = _merge_chunks([chunk for item in prepared for chunk in item.chunks])
         confidence = _aggregate_confidence([item.confidence for item in prepared])
         message = "low_retrieval_confidence" if any(item.confidence == "low" for item in prepared) else None
@@ -116,16 +150,21 @@ class AgentService:
             "confidence": confidence,
             "sources": [chunk.model_dump() for chunk in all_sources],
             "message": message,
+            "session_id": memory_context.session_id,
         }
         if debug_trace:
             meta["agent_trace"] = state.trace.model_dump()
         yield meta
 
+        answer_parts: list[str] = []
         for index, item in enumerate(prepared, start=1):
             if len(prepared) > 1:
-                yield {"type": "delta", "text": f"\n\n### {_subtask_title(item.subtask, index)}\n\n"}
+                heading = f"\n\n### {_subtask_title(item.subtask, index)}\n\n"
+                answer_parts.append(heading)
+                yield {"type": "delta", "text": heading}
 
             if item.refusal_message:
+                answer_parts.append(item.refusal_message)
                 yield {"type": "delta", "text": item.refusal_message}
                 state.trace.steps.append(
                     AgentStep(
@@ -144,6 +183,8 @@ class AgentService:
             ):
                 if event.get("type") in {"meta", "done"}:
                     continue
+                if event.get("type") == "delta":
+                    answer_parts.append(str(event.get("text") or ""))
                 yield event
 
             state.trace.steps.append(
@@ -154,7 +195,223 @@ class AgentService:
                 )
             )
 
+        await self._remember_turn(
+            db,
+            request,
+            ChatResponse(
+                task_type=task_type,
+                answer="".join(answer_parts),
+                sources=all_sources,
+                confidence=confidence,  # type: ignore[arg-type]
+                message=message,
+                session_id=memory_context.session_id,
+            ),
+            memory_context.session_id,
+            state.trace,
+        )
         yield {"type": "done"}
+
+    async def _prepare_memory_context(
+        self,
+        db: Session,
+        request: ChatRequest,
+    ) -> tuple[LoadedMemoryContext, MemoryResolvedRequest, ChatRequest]:
+        if self.memory_service is None:
+            resolution = MemoryResolvedRequest(answer_query=request.query, retrieval_query=request.query)
+            return LoadedMemoryContext(session_id=request.session_id or ""), resolution, request
+        memory_context = self.memory_service.load_context(db, request.session_id, request.query)
+        resolution = await self.memory_service.resolve_request(memory_context, request.query)
+        extra_context = dict(request.extra_context or {})
+        extra_context["memory_retrieval_query"] = resolution.retrieval_query or resolution.answer_query
+        extra_context["memory_reference"] = resolution.memory_reference
+        working_request = request.model_copy(
+            update={
+                "query": resolution.answer_query,
+                "session_id": memory_context.session_id,
+                "extra_context": extra_context,
+            }
+        )
+        return memory_context, resolution, working_request
+
+    async def _handle_memory_only(
+        self,
+        db: Session,
+        request: ChatRequest,
+        memory_context: LoadedMemoryContext,
+        memory_resolution: MemoryResolvedRequest,
+    ) -> ChatResponse:
+        trace = AgentTrace()
+        _append_memory_load_trace(trace, memory_context, memory_resolution)
+        try:
+            answer = await self.memory_service.answer_from_memory(  # type: ignore[union-attr]
+                context=memory_context,
+                query=request.query,
+            )
+            response = ChatResponse(
+                task_type="memory",
+                answer=answer,
+                sources=[],
+                confidence="high",
+                session_id=memory_context.session_id,
+                agent_trace=trace if _debug_trace_enabled(request) else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            response = ChatResponse(
+                task_type="memory",
+                answer=f"读取会话记忆时出错：{exc}",
+                sources=[],
+                confidence="low",
+                message="memory_error",
+                session_id=memory_context.session_id,
+                agent_trace=trace if _debug_trace_enabled(request) else None,
+            )
+        await self._remember_turn(db, request, response, memory_context.session_id, trace)
+        return response
+
+    async def _handle_memory_only_stream(
+        self,
+        db: Session,
+        request: ChatRequest,
+        memory_context: LoadedMemoryContext,
+        memory_resolution: MemoryResolvedRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
+        trace = AgentTrace()
+        _append_memory_load_trace(trace, memory_context, memory_resolution)
+        meta: dict[str, Any] = {
+            "type": "meta",
+            "task_type": "memory",
+            "confidence": "high",
+            "sources": [],
+            "message": None,
+            "session_id": memory_context.session_id,
+        }
+        if _debug_trace_enabled(request):
+            meta["agent_trace"] = trace.model_dump()
+        yield meta
+
+        answer_parts: list[str] = []
+        try:
+            async for token in self.memory_service.stream_answer_from_memory(  # type: ignore[union-attr]
+                context=memory_context,
+                query=request.query,
+            ):
+                answer_parts.append(token)
+                yield {"type": "delta", "text": token}
+        except Exception as exc:  # noqa: BLE001
+            yield {"type": "error", "message": f"读取会话记忆时出错：{exc}"}
+            return
+
+        response = ChatResponse(
+            task_type="memory",
+            answer="".join(answer_parts),
+            sources=[],
+            confidence="high",
+            session_id=memory_context.session_id,
+        )
+        await self._remember_turn(db, request, response, memory_context.session_id, trace)
+        yield {"type": "done"}
+
+    async def _memory_fallback_response(
+        self,
+        db: Session,
+        request: ChatRequest,
+        memory_context: LoadedMemoryContext,
+        memory_resolution: MemoryResolvedRequest,
+        trace: AgentTrace,
+    ) -> ChatResponse:
+        trace.steps.append(
+            AgentStep(
+                step_type="memory_fallback",
+                input={"query": request.query, "retrieval_query": memory_resolution.retrieval_query},
+                output={"reason": "rag_evidence_insufficient_for_memory_reference"},
+            )
+        )
+        answer = await self.memory_service.answer_from_memory(  # type: ignore[union-attr]
+            context=memory_context,
+            query=request.query,
+            retrieval_note="Course retrieval was insufficient for this follow-up.",
+        )
+        response = ChatResponse(
+            task_type="memory",
+            answer=answer,
+            sources=[],
+            confidence="medium",
+            message="memory_fallback",
+            session_id=memory_context.session_id,
+        )
+        await self._remember_turn(db, request, response, memory_context.session_id, trace)
+        return response
+
+    async def _memory_fallback_stream(
+        self,
+        db: Session,
+        request: ChatRequest,
+        memory_context: LoadedMemoryContext,
+        memory_resolution: MemoryResolvedRequest,
+        trace: AgentTrace,
+    ) -> AsyncIterator[dict[str, Any]]:
+        trace.steps.append(
+            AgentStep(
+                step_type="memory_fallback",
+                input={"query": request.query, "retrieval_query": memory_resolution.retrieval_query},
+                output={"reason": "rag_evidence_insufficient_for_memory_reference"},
+            )
+        )
+        meta: dict[str, Any] = {
+            "type": "meta",
+            "task_type": "memory",
+            "confidence": "medium",
+            "sources": [],
+            "message": "memory_fallback",
+            "session_id": memory_context.session_id,
+        }
+        if _debug_trace_enabled(request):
+            meta["agent_trace"] = trace.model_dump()
+        yield meta
+
+        answer_parts: list[str] = []
+        async for token in self.memory_service.stream_answer_from_memory(  # type: ignore[union-attr]
+            context=memory_context,
+            query=request.query,
+            retrieval_note="Course retrieval was insufficient for this follow-up.",
+        ):
+            answer_parts.append(token)
+            yield {"type": "delta", "text": token}
+        response = ChatResponse(
+            task_type="memory",
+            answer="".join(answer_parts),
+            sources=[],
+            confidence="medium",
+            message="memory_fallback",
+            session_id=memory_context.session_id,
+        )
+        await self._remember_turn(db, request, response, memory_context.session_id, trace)
+        yield {"type": "done"}
+
+    async def _remember_turn(
+        self,
+        db: Session,
+        request: ChatRequest,
+        response: ChatResponse,
+        session_id: str,
+        trace: AgentTrace,
+    ) -> None:
+        if self.memory_service is None or not session_id:
+            return
+        await self.memory_service.remember_turn(
+            db,
+            session_id=session_id,
+            user_query=request.query,
+            assistant_answer=response.answer,
+            task_type=response.task_type,
+        )
+        trace.steps.append(
+            AgentStep(
+                step_type="memory_write",
+                input={"session_id": session_id, "task_type": response.task_type},
+                output={"answer_chars": len(response.answer)},
+            )
+        )
 
     async def _prepare(self, db: Session, request: ChatRequest) -> tuple[AgentState, list[PreparedSubtask]]:
         decision = await self.router.decide(request.query, request.task_type)
@@ -174,6 +431,11 @@ class AgentService:
                     reason=decision.reason,
                 )
             ]
+
+        memory_retrieval_query = (request.extra_context or {}).get("memory_retrieval_query")
+        if memory_retrieval_query:
+            for subtask in subtasks:
+                subtask.rewritten_query = str(memory_retrieval_query)
 
         state = AgentState(
             original_query=request.query,
@@ -424,6 +686,41 @@ class AgentService:
 
 def _debug_trace_enabled(request: ChatRequest) -> bool:
     return bool((request.extra_context or {}).get("debug_agent_trace"))
+
+
+def _append_memory_load_trace(
+    trace: AgentTrace,
+    context: LoadedMemoryContext,
+    resolution: MemoryResolvedRequest,
+) -> None:
+    trace.steps.insert(
+        0,
+        AgentStep(
+            step_type="memory_load",
+            input={"session_id": context.session_id},
+            output={
+                "has_summary": bool(context.summary),
+                "recent_message_count": len(context.recent_messages),
+                "long_term_memory_count": len(context.long_term_memories),
+                "mode": "memory_only" if resolution.memory_only else "rag",
+                "memory_reference": resolution.memory_reference,
+                "answer_query": resolution.answer_query,
+                "retrieval_query": resolution.retrieval_query,
+                "reason": resolution.reason,
+            },
+        ),
+    )
+
+
+def _should_fallback_to_memory(
+    prepared: list[PreparedSubtask],
+    resolution: MemoryResolvedRequest,
+) -> bool:
+    return bool(
+        resolution.memory_reference
+        and len(prepared) == 1
+        and prepared[0].refusal_message
+    )
 
 
 def _summary_target_top_k(request_top_k: int | None, default_top_k: int) -> int:

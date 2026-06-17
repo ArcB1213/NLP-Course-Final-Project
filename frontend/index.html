@@ -83,6 +83,16 @@
         <input id="show-agent-trace" type="checkbox" checked />
         <span>显示 Agent 决策过程</span>
       </label>
+      <div class="memory-panel">
+        <div class="section-title">记忆</div>
+        <div id="session-status" class="memory-status">当前会话：未创建</div>
+        <div id="memory-status" class="memory-status">长期记忆：加载中</div>
+        <div class="memory-actions">
+          <button id="new-session" type="button" class="ghost">新建会话</button>
+          <button id="clear-session" type="button" class="ghost">清空会话</button>
+          <button id="clear-memory" type="button" class="ghost danger">清空长期记忆</button>
+        </div>
+      </div>
     </aside>
   </main>
 

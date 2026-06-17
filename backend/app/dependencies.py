@@ -3,6 +3,7 @@ from functools import lru_cache
 from app.config import get_settings
 from app.core.agent_service import AgentService
 from app.core.llm_client import DeepSeekClient
+from app.core.memory_service import MemoryService
 from app.core.router_agent import RouterAgent
 from app.document.ingestion import IngestionService
 from app.retrieval.bm25_store import BM25Store
@@ -24,6 +25,11 @@ def get_embedder() -> Embedder:
 @lru_cache
 def get_vector_store() -> FaissVectorStore:
     return FaissVectorStore(get_settings().index_dir)
+
+
+@lru_cache
+def get_memory_vector_store() -> FaissVectorStore:
+    return FaissVectorStore(get_settings().memory_index_dir)
 
 
 @lru_cache
@@ -66,6 +72,16 @@ def get_llm_client() -> DeepSeekClient:
     )
 
 
+@lru_cache
+def get_memory_service() -> MemoryService:
+    return MemoryService(
+        settings=get_settings(),
+        llm=get_llm_client(),
+        embedder=get_embedder(),
+        vector_store=get_memory_vector_store(),
+    )
+
+
 def get_ingestion_service() -> IngestionService:
     return IngestionService(get_settings(), get_vector_retriever())
 
@@ -93,4 +109,5 @@ def get_agent_service() -> AgentService:
         summary_tool=get_summary_tool(),
         quiz_tool=get_quiz_tool(),
         grading_tool=get_grading_tool(),
+        memory_service=get_memory_service(),
     )

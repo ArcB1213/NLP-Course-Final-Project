@@ -201,11 +201,89 @@ const chatLog = document.getElementById("chat-log");
 const chatSend = document.getElementById("chat-send");
 const traceToggle = document.getElementById("show-agent-trace");
 const TRACE_PREF_KEY = "course-rag-show-agent-trace";
+const SESSION_KEY = "course-rag-session-id";
+const sessionStatus = document.getElementById("session-status");
+const memoryStatus = document.getElementById("memory-status");
+const newSessionBtn = document.getElementById("new-session");
+const clearSessionBtn = document.getElementById("clear-session");
+const clearMemoryBtn = document.getElementById("clear-memory");
+let currentSessionId = localStorage.getItem(SESSION_KEY) || "";
 
 traceToggle.checked = localStorage.getItem(TRACE_PREF_KEY) !== "false";
 traceToggle.addEventListener("change", () => {
   localStorage.setItem(TRACE_PREF_KEY, String(traceToggle.checked));
 });
+
+function updateSessionStatus() {
+  sessionStatus.textContent = currentSessionId
+    ? `当前会话：${currentSessionId.slice(0, 8)}`
+    : "当前会话：未创建";
+}
+
+function clearChatLog() {
+  chatLog.innerHTML = '<div class="empty-tip">新会话已准备好，可以继续提问。</div>';
+}
+
+function saveSessionId(sessionId) {
+  if (!sessionId) return;
+  currentSessionId = sessionId;
+  localStorage.setItem(SESSION_KEY, sessionId);
+  updateSessionStatus();
+}
+
+async function refreshMemoryStatus() {
+  if (!memoryStatus) return;
+  try {
+    const res = await fetch(`${API_BASE}/memory`);
+    if (!res.ok) throw new Error(res.statusText);
+    const data = await res.json();
+    const count = Array.isArray(data.memories) ? data.memories.length : 0;
+    memoryStatus.textContent = `长期记忆：${count} 条`;
+  } catch {
+    memoryStatus.textContent = "长期记忆：无法加载";
+  }
+}
+
+newSessionBtn.addEventListener("click", () => {
+  currentSessionId = "";
+  localStorage.removeItem(SESSION_KEY);
+  updateSessionStatus();
+  clearChatLog();
+});
+
+clearSessionBtn.addEventListener("click", async () => {
+  if (!currentSessionId) {
+    clearChatLog();
+    return;
+  }
+  if (!confirm("清空当前会话历史？长期记忆不会被删除。")) return;
+  const sessionId = currentSessionId;
+  currentSessionId = "";
+  localStorage.removeItem(SESSION_KEY);
+  updateSessionStatus();
+  try {
+    await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  } finally {
+    clearChatLog();
+  }
+});
+
+clearMemoryBtn.addEventListener("click", async () => {
+  if (!confirm("清空全部长期记忆？当前会话历史不会被删除。")) return;
+  clearMemoryBtn.disabled = true;
+  try {
+    const res = await fetch(`${API_BASE}/memory`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await refreshMemoryStatus();
+  } catch (err) {
+    memoryStatus.textContent = `长期记忆：清空失败 ${err.message}`;
+  } finally {
+    clearMemoryBtn.disabled = false;
+  }
+});
+
+updateSessionStatus();
+refreshMemoryStatus();
 
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -239,6 +317,7 @@ chatForm.addEventListener("submit", async (e) => {
       task_type: taskType,
       use_pro_model: usePro,
       top_k: topK,
+      session_id: currentSessionId || null,
       extra_context: { debug_agent_trace: showAgentTrace },
     }, agentMsg);
   } catch (err) {
@@ -355,6 +434,7 @@ async function streamChat(payload, agentMsg) {
 
       if (event.type === "meta") {
         metaInfo = event;
+        if (event.session_id) saveSessionId(event.session_id);
         agentMsg.meta.innerHTML = renderMetaLine(event);
       } else if (event.type === "delta") {
         if (firstDelta) { agentMsg.bubble.textContent = ""; firstDelta = false; }
@@ -376,6 +456,7 @@ async function streamChat(payload, agentMsg) {
         if (metaInfo && metaInfo.sources && metaInfo.sources.length) {
           agentMsg.bubble.appendChild(renderSources(metaInfo.sources));
         }
+        refreshMemoryStatus();
       }
     }
   }
@@ -384,12 +465,16 @@ async function streamChat(payload, agentMsg) {
 function renderMetaLine(meta) {
   const conf = meta.confidence || "medium";
   const tag = `<span class="confidence-tag ${conf}">${conf}</span>`;
+  const sessionTag = meta.session_id ? `<span>会话 ${String(meta.session_id).slice(0, 8)}</span>` : "";
   const parts = [`Agent · ${meta.task_type || "?"}`, tag];
   if (meta.message) parts.push(`<span style="color:var(--warn)">· ${meta.message}</span>`);
+  if (sessionTag) parts.push(sessionTag);
   return parts.join(" ");
 }
 
 const TRACE_STEP_LABELS = {
+  memory_load: "加载记忆",
+  memory_write: "写入记忆",
   route: "任务路由",
   plan: "任务规划",
   retrieve: "首次检索",
@@ -456,6 +541,26 @@ function renderAgentStep(step, index) {
 function traceStepFields(step) {
   const input = step.input || {};
   const output = step.output || {};
+  if (step.step_type === "memory_load") {
+    return [
+      ["会话", input.session_id],
+      ["已有摘要", output.has_summary],
+      ["短期消息", output.recent_message_count],
+      ["长期记忆", output.long_term_memory_count],
+      ["mode", output.mode],
+      ["memory_reference", output.memory_reference],
+      ["answer_query", output.answer_query],
+      ["retrieval_query", output.retrieval_query],
+      ["reason", output.reason],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  }
+  if (step.step_type === "memory_write") {
+    return [
+      ["会话", input.session_id],
+      ["任务", input.task_type],
+      ["回答字数", output.answer_chars],
+    ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  }
   if (step.step_type === "route") {
     return [
       ["任务类型", output.task_type],

@@ -69,6 +69,7 @@ class ChatRequest(BaseModel):
     task_type: TaskTypeValue | None = "qa"
     use_pro_model: bool = False
     top_k: int | None = None
+    session_id: str | None = None
     extra_context: dict[str, Any] | None = None
 
 
@@ -78,7 +79,29 @@ class ChatResponse(BaseModel):
     sources: list[RetrievedChunk]
     confidence: ConfidenceValue
     message: str | None = None
+    session_id: str | None = None
     agent_trace: "AgentTrace | None" = None
+
+
+class MemoryRecordRead(BaseModel):
+    id: str
+    kind: str
+    content: str
+    importance: int
+    source_session_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_used_at: datetime | None = None
+
+    model_config = {"from_attributes": True}
+
+
+class MemoryListResponse(BaseModel):
+    memories: list[MemoryRecordRead]
+
+
+class ClearResponse(BaseModel):
+    deleted: int
 
 
 class AgentDecision(BaseModel):

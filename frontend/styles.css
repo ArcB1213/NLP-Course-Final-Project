@@ -594,6 +594,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .setting.checkbox input { margin: 0; }
 
+.memory-panel {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.memory-status {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+.memory-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.memory-actions button {
+  width: 100%;
+}
+button.ghost.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .spinner {
   display: inline-block;
   width: 12px; height: 12px;
