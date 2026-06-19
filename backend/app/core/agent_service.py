@@ -68,7 +68,7 @@ class AgentService:
 
         state, prepared = await self._prepare(db, working_request)
         debug_trace = _debug_trace_enabled(request)
-        _append_memory_load_trace(state.trace, memory_context, memory_resolution)
+        _append_memory_resolve_trace(state.trace, memory_context, memory_resolution)
 
         if _should_fallback_to_memory(prepared, memory_resolution):
             response = await self._memory_fallback_response(db, request, memory_context, memory_resolution, state.trace)
@@ -130,7 +130,7 @@ class AgentService:
 
         state, prepared = await self._prepare(db, working_request)
         debug_trace = _debug_trace_enabled(request)
-        _append_memory_load_trace(state.trace, memory_context, memory_resolution)
+        _append_memory_resolve_trace(state.trace, memory_context, memory_resolution)
 
         if _should_fallback_to_memory(prepared, memory_resolution):
             async for event in self._memory_fallback_stream(db, request, memory_context, memory_resolution, state.trace):
@@ -223,7 +223,7 @@ class AgentService:
         resolution = await self.memory_service.resolve_request(memory_context, request.query)
         extra_context = dict(request.extra_context or {})
         extra_context["memory_retrieval_query"] = resolution.retrieval_query or resolution.answer_query
-        extra_context["memory_reference"] = resolution.memory_reference
+        extra_context["memory_mode"] = resolution.mode
         working_request = request.model_copy(
             update={
                 "query": resolution.answer_query,
@@ -241,7 +241,7 @@ class AgentService:
         memory_resolution: MemoryResolvedRequest,
     ) -> ChatResponse:
         trace = AgentTrace()
-        _append_memory_load_trace(trace, memory_context, memory_resolution)
+        _append_memory_resolve_trace(trace, memory_context, memory_resolution)
         try:
             answer = await self.memory_service.answer_from_memory(  # type: ignore[union-attr]
                 context=memory_context,
@@ -276,7 +276,7 @@ class AgentService:
         memory_resolution: MemoryResolvedRequest,
     ) -> AsyncIterator[dict[str, Any]]:
         trace = AgentTrace()
-        _append_memory_load_trace(trace, memory_context, memory_resolution)
+        _append_memory_resolve_trace(trace, memory_context, memory_resolution)
         meta: dict[str, Any] = {
             "type": "meta",
             "task_type": "memory",
@@ -323,7 +323,7 @@ class AgentService:
             AgentStep(
                 step_type="memory_fallback",
                 input={"query": request.query, "retrieval_query": memory_resolution.retrieval_query},
-                output={"reason": "rag_evidence_insufficient_for_memory_reference"},
+                output={"reason": "rag_evidence_insufficient_for_resolved_followup"},
             )
         )
         answer = await self.memory_service.answer_from_memory(  # type: ignore[union-attr]
@@ -354,7 +354,7 @@ class AgentService:
             AgentStep(
                 step_type="memory_fallback",
                 input={"query": request.query, "retrieval_query": memory_resolution.retrieval_query},
-                output={"reason": "rag_evidence_insufficient_for_memory_reference"},
+                output={"reason": "rag_evidence_insufficient_for_resolved_followup"},
             )
         )
         meta: dict[str, Any] = {
@@ -688,7 +688,7 @@ def _debug_trace_enabled(request: ChatRequest) -> bool:
     return bool((request.extra_context or {}).get("debug_agent_trace"))
 
 
-def _append_memory_load_trace(
+def _append_memory_resolve_trace(
     trace: AgentTrace,
     context: LoadedMemoryContext,
     resolution: MemoryResolvedRequest,
@@ -696,16 +696,17 @@ def _append_memory_load_trace(
     trace.steps.insert(
         0,
         AgentStep(
-            step_type="memory_load",
+            step_type="memory_resolve",
             input={"session_id": context.session_id},
             output={
                 "has_summary": bool(context.summary),
                 "recent_message_count": len(context.recent_messages),
                 "long_term_memory_count": len(context.long_term_memories),
-                "mode": "memory_only" if resolution.memory_only else "rag",
-                "memory_reference": resolution.memory_reference,
+                "mode": resolution.mode,
                 "answer_query": resolution.answer_query,
                 "retrieval_query": resolution.retrieval_query,
+                "referenced_turns": resolution.referenced_turns,
+                "confidence": resolution.confidence,
                 "reason": resolution.reason,
             },
         ),
@@ -717,7 +718,7 @@ def _should_fallback_to_memory(
     resolution: MemoryResolvedRequest,
 ) -> bool:
     return bool(
-        resolution.memory_reference
+        resolution.mode == "rag_with_memory"
         and len(prepared) == 1
         and prepared[0].refusal_message
     )

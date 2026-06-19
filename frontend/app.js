@@ -473,8 +473,9 @@ function renderMetaLine(meta) {
 }
 
 const TRACE_STEP_LABELS = {
-  memory_load: "加载记忆",
+  memory_resolve: "记忆解析",
   memory_write: "写入记忆",
+  memory_fallback: "记忆回退",
   route: "任务路由",
   plan: "任务规划",
   retrieve: "首次检索",
@@ -541,16 +542,17 @@ function renderAgentStep(step, index) {
 function traceStepFields(step) {
   const input = step.input || {};
   const output = step.output || {};
-  if (step.step_type === "memory_load") {
+  if (step.step_type === "memory_resolve") {
     return [
       ["会话", input.session_id],
       ["已有摘要", output.has_summary],
       ["短期消息", output.recent_message_count],
       ["长期记忆", output.long_term_memory_count],
       ["mode", output.mode],
-      ["memory_reference", output.memory_reference],
+      ["confidence", output.confidence],
       ["answer_query", output.answer_query],
       ["retrieval_query", output.retrieval_query],
+      ["referenced_turns", output.referenced_turns],
       ["reason", output.reason],
     ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   }

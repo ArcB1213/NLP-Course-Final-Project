@@ -1,8 +1,10 @@
 import json
 import re
 from dataclasses import dataclass, field
+from typing import AsyncIterator, Literal
 
 import httpx
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import Settings
@@ -16,9 +18,6 @@ from app.retrieval.vector_store import FaissVectorStore
 MEMORY_CONTEXT_TEMPLATE = """
 [Conversation context]
 {conversation_context}
-
-[Long-term learner memory]
-{long_term_memory}
 
 Memory is only for understanding the user's context and learning preferences.
 Do not treat memory as course evidence, and do not cite it as a source.
@@ -48,23 +47,29 @@ If there is no durable memory, return {"memories":[]}.
 """.strip()
 
 
-RESOLVE_MEMORY_PROMPT = """
-You resolve follow-up requests for a Chinese NLP course assistant.
-Use the conversation memory to replace references such as "刚才", "上面",
-"第三道题", "它", or "这道题" with the concrete prior content.
+MEMORY_RESOLVE_SYSTEM_PROMPT = """
+You are the memory intent resolver for a Chinese NLP course assistant.
+Classify the current user request and resolve any references to prior dialogue.
 
 Return JSON only:
 {
   "mode": "normal|rag_with_memory|memory_only",
   "answer_query": "standalone request for answer generation",
-  "retrieval_query": "short course-knowledge query for RAG, no words like 刚才/上面/记得",
+  "retrieval_query": "short standalone course-knowledge query for RAG, or empty for memory_only",
+  "referenced_turns": ["brief summaries of prior turns used, or message roles if exact turns are unclear"],
+  "confidence": "high|medium|low",
   "reason": "brief reason"
 }
 
-Choose "memory_only" when the user only asks to recall, list, compare, or confirm
-previous conversation content. Choose "rag_with_memory" when the user refers to
-previous content but asks for course-knowledge explanation. Choose "normal" when
-the request does not depend on conversation memory.
+Decision rules:
+- normal: the request is self-contained and does not require conversation memory.
+- memory_only: the user asks to recall, list, compare, confirm, rewrite, or continue prior conversation content.
+- rag_with_memory: the user refers to prior conversation content and also asks for course knowledge explanation.
+
+retrieval_query rules:
+- For normal and rag_with_memory, write a standalone knowledge query suitable for course-document retrieval.
+- Do not include deictic words such as "刚才", "上面", "之前", "第三题", "这道题", "它", or "你记得".
+- For memory_only, retrieval_query must be an empty string.
 """.strip()
 
 
@@ -86,20 +91,25 @@ SECRET_PATTERNS = [
     re.compile(r"[A-Za-z0-9_\-]{40,}"),
 ]
 
-MEMORY_REFERENCE_TERMS = (
+
+DEICTIC_RETRIEVAL_TERMS = (
     "刚才",
     "上面",
     "之前",
     "前面",
-    "上一",
     "刚刚",
+    "上一",
+    "第三题",
     "第三道",
+    "第二题",
     "第二道",
+    "第一题",
     "第一道",
     "这道题",
     "那道题",
     "这些题",
     "那三道",
+    "它",
     "记得",
 )
 
@@ -120,9 +130,58 @@ class LoadedMemoryContext:
 class MemoryResolvedRequest:
     answer_query: str
     retrieval_query: str | None = None
-    memory_only: bool = False
-    memory_reference: bool = False
+    mode: Literal["normal", "rag_with_memory", "memory_only"] = "normal"
+    referenced_turns: list[str] = field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
     reason: str | None = None
+
+    @property
+    def memory_only(self) -> bool:
+        return self.mode == "memory_only"
+
+class MemoryResolutionPayload(BaseModel):
+    mode: Literal["normal", "rag_with_memory", "memory_only"] = "normal"
+    answer_query: str
+    retrieval_query: str = ""
+    referenced_turns: list[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "medium"
+    reason: str = ""
+
+
+class MemoryIntentResolver:
+    def __init__(self, llm: DeepSeekClient):
+        self.llm = llm
+
+    async def resolve(self, context_text: str, query: str) -> MemoryResolvedRequest:
+        if not self.llm.api_key:
+            return MemoryResolvedRequest(
+                answer_query=query,
+                retrieval_query=query,
+                mode="normal",
+                confidence="low",
+                reason="resolver_unavailable_no_api_key",
+            )
+
+        try:
+            content = await self.llm.chat(
+                messages=[
+                    {"role": "system", "content": MEMORY_RESOLVE_SYSTEM_PROMPT},
+                    {"role": "user", "content": f"Conversation memory:\n{context_text}\n\nCurrent request:\n{query}"},
+                ],
+                temperature=0.0,
+                max_tokens=700,
+            )
+            payload = MemoryResolutionPayload.model_validate(_parse_json_object(content))
+        except (RuntimeError, httpx.HTTPError, ValueError, json.JSONDecodeError):
+            return MemoryResolvedRequest(
+                answer_query=query,
+                retrieval_query=query,
+                mode="normal",
+                confidence="low",
+                reason="resolver_failed",
+            )
+
+        return _normalize_resolution(payload, query)
 
 
 class MemoryService:
@@ -132,11 +191,13 @@ class MemoryService:
         llm: DeepSeekClient,
         embedder: Embedder,
         vector_store: FaissVectorStore | None = None,
+        resolver: MemoryIntentResolver | None = None,
     ):
         self.settings = settings
         self.llm = llm
         self.embedder = embedder
         self.vector_store = vector_store or FaissVectorStore(settings.memory_index_dir)
+        self.resolver = resolver or MemoryIntentResolver(llm)
 
     def load_context(self, db: Session, session_id: str | None, query: str) -> LoadedMemoryContext:
         session = crud.get_or_create_session(db, session_id)
@@ -155,48 +216,8 @@ class MemoryService:
 
     async def resolve_request(self, context: LoadedMemoryContext, query: str) -> MemoryResolvedRequest:
         if not context.has_context:
-            return MemoryResolvedRequest(answer_query=query, retrieval_query=query)
-
-        context_text = self.build_context_text(context)
-        memory_reference = _looks_like_memory_reference(query)
-        if not self.llm.api_key:
-            answer_query = self.build_contextual_query(context, query) if memory_reference else query
-            return MemoryResolvedRequest(
-                answer_query=answer_query,
-                retrieval_query=query,
-                memory_reference=memory_reference,
-                reason="rule_fallback_no_llm",
-            )
-
-        try:
-            content = await self.llm.chat(
-                messages=[
-                    {"role": "system", "content": RESOLVE_MEMORY_PROMPT},
-                    {"role": "user", "content": f"Conversation memory:\n{context_text}\n\nCurrent request:\n{query}"},
-                ],
-                temperature=0.0,
-                max_tokens=700,
-            )
-            payload = _parse_json_object(content)
-        except (RuntimeError, httpx.HTTPError, ValueError, json.JSONDecodeError):
-            answer_query = self.build_contextual_query(context, query) if memory_reference else query
-            return MemoryResolvedRequest(
-                answer_query=answer_query,
-                retrieval_query=query,
-                memory_reference=memory_reference,
-                reason="rule_fallback_resolve_failed",
-            )
-
-        mode = str(payload.get("mode") or "normal")
-        answer_query = str(payload.get("answer_query") or query).strip()
-        retrieval_query = str(payload.get("retrieval_query") or "").strip() or None
-        return MemoryResolvedRequest(
-            answer_query=answer_query,
-            retrieval_query=retrieval_query or answer_query,
-            memory_only=mode == "memory_only",
-            memory_reference=mode in {"memory_only", "rag_with_memory"} or memory_reference,
-            reason=str(payload.get("reason") or ""),
-        )
+            return MemoryResolvedRequest(answer_query=query, retrieval_query=query, mode="normal", confidence="high")
+        return await self.resolver.resolve(self.build_context_text(context), query)
 
     def build_context_text(self, context: LoadedMemoryContext) -> str:
         conversation_parts: list[str] = []
@@ -217,10 +238,8 @@ class MemoryService:
     def build_contextual_query(self, context: LoadedMemoryContext, query: str) -> str:
         if not context.has_context:
             return query
-
         return MEMORY_CONTEXT_TEMPLATE.format(
             conversation_context=self.build_context_text(context),
-            long_term_memory="Included above",
             query=query,
         )
 
@@ -251,7 +270,7 @@ class MemoryService:
         context: LoadedMemoryContext,
         query: str,
         retrieval_note: str | None = None,
-    ):
+    ) -> AsyncIterator[str]:
         note = f"\n\nRetrieval note: {retrieval_note}" if retrieval_note else ""
         async for token in self.llm.chat_stream(
             messages=[
@@ -427,6 +446,43 @@ class MemoryService:
             self.rebuild_memory_index(db)
 
 
+def _normalize_resolution(payload: MemoryResolutionPayload, original_query: str) -> MemoryResolvedRequest:
+    answer_query = payload.answer_query.strip() or original_query
+    retrieval_query = payload.retrieval_query.strip()
+    mode = payload.mode
+    reason = payload.reason
+
+    if mode == "memory_only":
+        retrieval_query = ""
+    elif not retrieval_query:
+        if payload.confidence == "low":
+            mode = "memory_only"
+            reason = reason or "resolver_low_confidence_without_retrieval_query"
+        else:
+            retrieval_query = answer_query
+
+    if retrieval_query and _contains_deictic_term(retrieval_query):
+        if payload.confidence == "low":
+            mode = "memory_only"
+            retrieval_query = ""
+            reason = reason or "resolver_low_confidence_deictic_retrieval_query"
+        else:
+            retrieval_query = _strip_deictic_terms(retrieval_query)
+            if not retrieval_query.strip():
+                mode = "memory_only"
+                retrieval_query = ""
+                reason = reason or "resolver_invalid_retrieval_query"
+
+    return MemoryResolvedRequest(
+        answer_query=answer_query,
+        retrieval_query=retrieval_query or None,
+        mode=mode,
+        referenced_turns=payload.referenced_turns,
+        confidence=payload.confidence,
+        reason=reason,
+    )
+
+
 def _format_messages(messages: list[ChatMessage]) -> str:
     return "\n".join(f"{message.role}: {_trim(message.content, 1000)}" for message in messages)
 
@@ -442,8 +498,15 @@ def _contains_secret(text: str) -> bool:
     return any(pattern.search(text or "") for pattern in SECRET_PATTERNS)
 
 
-def _looks_like_memory_reference(text: str) -> bool:
-    return any(term in (text or "") for term in MEMORY_REFERENCE_TERMS)
+def _contains_deictic_term(text: str) -> bool:
+    return any(term in text for term in DEICTIC_RETRIEVAL_TERMS)
+
+
+def _strip_deictic_terms(text: str) -> str:
+    cleaned = text
+    for term in DEICTIC_RETRIEVAL_TERMS:
+        cleaned = cleaned.replace(term, "")
+    return " ".join(cleaned.split())
 
 
 def _parse_json_object(content: str) -> dict:
