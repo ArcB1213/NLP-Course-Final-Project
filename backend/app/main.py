@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.staticfiles import StaticFiles
 
-from app.api import chat, documents, health, memory, search
+from app.api import chat, documents, evaluations, health, memory, search
 from app.config import get_settings
 from app.db.database import init_db
 
@@ -26,6 +26,7 @@ app.include_router(documents.router)
 app.include_router(search.router)
 app.include_router(chat.router)
 app.include_router(memory.router)
+app.include_router(evaluations.router)
 
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"

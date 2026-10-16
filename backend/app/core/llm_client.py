@@ -8,11 +8,13 @@ CONTINUE_PROMPT = "继续完成上一条回答，从中断处接着写，不要�
 
 
 class DeepSeekClient:
-    def __init__(self, api_key: str, base_url: str, default_model: str, timeout: float = 60.0):
+    def __init__(self, api_key: str, base_url: str, default_model: str, timeout: float = 60.0,
+                 default_thinking: bool | None = None):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.default_model = default_model
         self.timeout = timeout
+        self.default_thinking = default_thinking
 
     async def chat(
         self,
@@ -22,6 +24,7 @@ class DeepSeekClient:
         max_tokens: int = 1200,
         continue_on_length: bool = False,
         max_continuations: int = 2,
+        thinking: bool | None = None,
     ) -> str:
         if not self.api_key:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
@@ -38,6 +41,9 @@ class DeepSeekClient:
                     "temperature": temperature,
                     "max_tokens": max_tokens,
                 }
+                effective_thinking = self.default_thinking if thinking is None else thinking
+                if effective_thinking is not None and payload["model"].startswith("deepseek"):
+                    payload["thinking"] = {"type": "enabled" if effective_thinking else "disabled"}
                 response = await client.post(f"{self.base_url}/chat/completions", json=payload, headers=headers)
                 response.raise_for_status()
                 data = response.json()
@@ -51,6 +57,8 @@ class DeepSeekClient:
                 if content:
                     content_parts.append(content)
                 elif not content_parts:
+                    if finish_reason == "length":
+                        raise RuntimeError("LLM output budget exhausted before final content")
                     raise RuntimeError("DeepSeek returned empty message content")
 
                 if not _should_continue(
@@ -78,6 +86,7 @@ class DeepSeekClient:
         max_tokens: int = 1200,
         continue_on_length: bool = True,
         max_continuations: int = 2,
+        thinking: bool | None = None,
     ) -> AsyncIterator[str]:
         if not self.api_key:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
@@ -95,6 +104,9 @@ class DeepSeekClient:
                     "max_tokens": max_tokens,
                     "stream": True,
                 }
+                effective_thinking = self.default_thinking if thinking is None else thinking
+                if effective_thinking is not None and payload["model"].startswith("deepseek"):
+                    payload["thinking"] = {"type": "enabled" if effective_thinking else "disabled"}
                 finish_reason: str | None = None
                 async with client.stream(
                     "POST",
@@ -127,6 +139,11 @@ class DeepSeekClient:
                         if text:
                             content_parts.append(text)
                             yield text
+
+                if not content_parts:
+                    if finish_reason == "length":
+                        raise RuntimeError("LLM output budget exhausted before final content")
+                    raise RuntimeError("DeepSeek returned empty message content")
 
                 if not _should_continue(
                     text="".join(content_parts),

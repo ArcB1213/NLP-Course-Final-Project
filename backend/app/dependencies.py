@@ -68,6 +68,7 @@ def get_llm_client() -> DeepSeekClient:
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
         default_model=settings.deepseek_model,
+        default_thinking=settings.deepseek_thinking,
         timeout=settings.request_timeout,
     )
 

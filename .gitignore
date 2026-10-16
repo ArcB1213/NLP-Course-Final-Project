@@ -19,3 +19,20 @@ backend/data/sqlite/*
 
 node_modules/
 dist/
+
+backend/data/evaluations/*
+!backend/data/evaluations/.gitkeep
+
+output/playwright/
+
+# Local evaluation exports, uploaded material, and presentation/recording artifacts.
+/data/
+*.jsonl
+*.pdf
+*.pptx
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.m4a
+.playwright-cli/

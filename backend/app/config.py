@@ -13,6 +13,17 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-v4-flash"
     deepseek_pro_model: str = "deepseek-v4-pro"
+    deepseek_thinking: bool = False
+
+    eval_generation_model: str = "deepseek-v4-flash"
+    eval_judge_model: str = "deepseek-v4-pro"
+    eval_generation_thinking: bool = False
+    eval_judge_thinking: bool = False
+    eval_generation_base_url: str = ""
+    eval_judge_base_url: str = ""
+    eval_generation_api_key: str = ""
+    eval_judge_api_key: str = ""
+    eval_dir: Path = Path("./data/evaluations")
 
     embedding_model: str = "BAAI/bge-base-zh-v1.5"
     reranker_model: str = "BAAI/bge-reranker-base"

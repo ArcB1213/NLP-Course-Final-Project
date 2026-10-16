@@ -25,6 +25,7 @@ python run.py
 
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
+DEEPSEEK_THINKING=false
 ```
 
 启动后访问：
@@ -42,6 +43,25 @@ http://localhost:8000/
 页面包含三栏布局：左侧资料库（上传 / 列表 / 删除），中间对话（流式输出，Enter 发送、Shift+Enter 换行），右侧设置（任务类型 / top_k / Pro 模型）。右上角圆形按钮可在深色 / 浅色主题之间切换。
 
 支持上传 PDF / Markdown (`.md`/`.markdown`) / TXT，单个文件默认上限 100 MB，可在 `.env` 配置 `MAX_UPLOAD_SIZE_MB` 调整。
+
+## 自动检索评测与人工审核
+
+首页点击“检索评测与审核”，或访问 `http://localhost:8000/evaluation.html`。
+支持从资料自动出题、真实检索、独立模型预标注、引文高亮、少量人工审核、断点续跑、
+JSONL 导出及固定问题的对照运行。已有评测集支持追加 1–200 道题目计划，
+保留原题与审核结果；出题时校验题干去重，重复自动重试最多 3 次。默认出题使用 `deepseek-v4-flash`，评审使用
+`deepseek-v4-pro`，页面可改模型名，`.env` 可分别设置服务地址和密钥。
+该模块评测检索证据，不改变对话流程的置信度规则；机器标签与人工标签分开统计。
+
+建议先创建 4 个问题确认配置；详细步骤、指标口径与 CLI 见
+[检索评测使用说明](docs/retrieval-evaluation.md)。
+
+## 系统端到端评测
+
+使用 `backend/evaluate_system.py` 选择多个已标注数据集或 JSONL 导出文件，执行真实
+Agent 单轮问答流程，独立评审答案的相关性、证据支持与关键点覆盖。
+支持按人工审核/测试分组筛选、共享问题去重、断点续跑、分数据集报告及结果导出。
+详见[系统端到端评测说明](docs/system-evaluation.md)。
 
 ## 当前阶段
 

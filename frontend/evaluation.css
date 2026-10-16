@@ -1,0 +1,21 @@
+body { font: 15px/1.6 system-ui, sans-serif; margin: 24px auto; max-width: 1200px; color: #202530; background: #f5f6f8; padding: 0 24px; }
+header, .toolbar, .fields { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+header { justify-content: space-between; }
+h1 { font-size: 25px; } h2 { font-size: 19px; }
+section { background: white; border: 1px solid #cbd1d9; padding: 20px; margin: 18px 0; }
+.fields label { display: flex; flex-direction: column; } .fields { align-items: end; }
+input, select, button, textarea { font: inherit; padding: 6px 10px; }
+button { cursor: pointer; } button:disabled { cursor: default; }
+input[type=number] { width: 90px; }
+textarea { width: 95%; }
+p { margin: 10px 0; } pre, .source { white-space: pre-wrap; overflow-wrap: anywhere; }
+pre { font-size: 12px; max-height: 350px; overflow: auto; }
+.source { background: #f6f7fa; border-left: 3px solid #8292a8; padding: 12px; max-height: 350px; overflow: auto; }
+mark { background: #ffeb97; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+th, td { text-align: left; padding: 7px; border: 1px solid #d4dae2; }
+progress { width: 100%; } #error { color: #a01818; }
+.badge { display: inline-block; background: #edf0f5; padding: 2px 7px; margin: 3px; }
+.chunk { border-top: 1px solid #cbd1d9; padding: 12px 0; }
+details { margin: 12px 0; } summary { cursor: pointer; }
+#documents label { display: block; }

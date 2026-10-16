@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>检索评测与人工审核</title>
+  <link rel="stylesheet" href="./evaluation.css">
+  <script src="./evaluation.js" defer></script>
+</head>
+<body>
+  <header><h1>检索评测与人工审核</h1><a href="/">返回课程助手</a></header>
+  <p>从课程资料出题 → 真实检索 → 独立模型预标注 → 少量人工审核。标签评价当前召回证据，不代表答案正确概率。</p>
+  <section>
+    <h2>1. 创建评测集</h2>
+    <form id="create-form">
+      <div class="fields">
+        <label>名称<input id="name" value="课程检索评测" required maxlength="100"></label>
+        <label>问题数量<input id="count" type="number" value="20" min="1" max="200" required></label>
+        <label>召回 top_k<input id="top-k" type="number" value="5" min="1" max="20" required></label>
+        <label>检索策略<select id="profile"><option>qa</option><option>summary</option><option>default</option></select></label>
+        <label>随机种子<input id="seed" type="number" value="42" min="0" max="2147483647" required></label>
+        <label>评审次数<select id="judge-passes"><option value="2">2（检测分歧）</option><option value="1">1（节省调用）</option></select></label>
+        <label>出题模型<input id="generation-model" required maxlength="200"></label>
+        <label>评审模型<input id="judge-model" required maxlength="200"></label>
+      </div>
+      <details><summary>选择出题资料（不选则使用全部；检索仍查询整个资料库）</summary><div id="documents">加载中…</div></details>
+      <p id="estimate"></p>
+      <button id="create" type="submit">创建问题计划</button>
+      <button id="clone" type="button" disabled>沿用当前问题创建对照运行</button>
+    </form>
+    <p>模型可在创建时修改；独立服务地址与密钥在 backend/.env 配置。创建计划不调用模型，点击运行后才调用。</p>
+  </section>
+  <section>
+    <h2>2. 运行与报告</h2>
+    <div class="toolbar">
+      <label>评测集<select id="datasets"><option value="">请选择</option></select></label>
+      <button id="refresh" type="button">刷新</button>
+      <button id="run" type="button" disabled>运行 / 继续</button>
+      <button id="pause" type="button" disabled>当前步骤结束后暂停</button>
+      <button id="retry" type="button" disabled>重试失败样本</button>
+      <a id="export" hidden>导出 JSONL</a>
+    </div>
+    <form id="append-form" class="toolbar">
+      <label>追加题数<input id="append-count" type="number" value="10" min="1" max="200" required></label>
+      <button id="append" type="submit" disabled>向当前评测集追加题目计划</button>
+      <span>沿用当前配置，每次 1–200 题；追加后点击“运行 / 继续”。题干去重，重复时最多自动重试 3 次。</span>
+    </form>
+    <p id="status" role="status">请选择或创建评测集。</p>
+    <p id="error" role="alert"></p>
+    <progress id="progress" value="0" max="1"></progress>
+    <p id="progress-text"></p>
+    <div id="report"></div>
+    <p>机器统计使用第一次评审；uncertain 不计入错误率分母，排除的问题不参与统计。
+      人工审核通常偏向难例，审核子集的比例不能外推为全系统错误率。校准集与测试集按来源文档分组，只有一个文档时不创建测试集。</p>
+    <details><summary>运行版本与配置</summary><pre id="metadata"></pre></details>
+    <div class="toolbar">
+      <label>对照基线<select id="baseline"><option value="">请选择</option></select></label>
+      <button id="compare" type="button" disabled>比较同批问题</button>
+    </div>
+    <div id="comparison"></div>
+  </section>
+  <section>
+    <h2>3. 人工审核</h2>
+    <div class="toolbar">
+      <label>筛选<select id="filter">
+        <option value="priority">优先审核（失败 / 虚高 / 分歧 / 随机）</option>
+        <option value="pending">全部未审核</option><option value="random">随机抽检</option>
+        <option value="errors">失败样本</option><option value="all">全部样本</option>
+      </select></label>
+      <label>分组<select id="split"><option value="all">全部</option><option value="calibration">校准集</option><option value="test">测试集</option></select></label>
+      <button id="previous" type="button">上一条</button><button id="next" type="button">下一条</button>
+      <span id="position"></span>
+    </div>
+    <div id="review-card">尚无样本。</div>
+  </section>
+</body>
+</html>
