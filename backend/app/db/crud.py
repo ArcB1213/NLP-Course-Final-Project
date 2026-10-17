@@ -55,7 +55,7 @@ def delete_document(db: Session, document_id: str) -> bool:
     return True
 
 
-def create_chunks(db: Session, chunks: list[ChunkCreate]) -> list[Chunk]:
+def create_chunks(db: Session, chunks: list[ChunkCreate], *, commit: bool = True) -> list[Chunk]:
     records = [
         Chunk(
             id=f"{chunk.document_id}_{chunk.chunk_index}",
@@ -71,7 +71,8 @@ def create_chunks(db: Session, chunks: list[ChunkCreate]) -> list[Chunk]:
         for chunk in chunks
     ]
     db.add_all(records)
-    db.commit()
+    if commit:
+        db.commit()
     return records
 
 

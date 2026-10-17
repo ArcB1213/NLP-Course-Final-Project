@@ -281,6 +281,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .status-pill.ready { color: var(--accent-2); border-color: var(--accent-2); }
 .status-pill.failed { color: var(--danger); border-color: var(--danger); }
+.status-pill.indexed_partial { color: var(--warn); border-color: var(--warn); }
 
 .doc-del {
   background: transparent;

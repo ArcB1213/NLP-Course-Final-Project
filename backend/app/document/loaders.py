@@ -1,9 +1,9 @@
 from pathlib import Path
 
-import fitz
-
 from app.core.schemas import RawPage
+from app.config import Settings
 from app.document.normalizer import normalize_text
+from app.document.pdf_parser import load_pdf
 
 
 class BaseLoader:
@@ -12,14 +12,14 @@ class BaseLoader:
 
 
 class PDFLoader(BaseLoader):
+    def __init__(self, settings: Settings | None = None):
+        self.settings = settings
+
     def load(self, file_path: str) -> list[RawPage]:
-        pages: list[RawPage] = []
-        with fitz.open(file_path) as document:
-            for index, page in enumerate(document, start=1):
-                text = normalize_text(page.get_text("text"))
-                if text:
-                    pages.append(RawPage(text=text, page=index, metadata={}))
-        return pages
+        if self.settings is not None and self.settings.pdf_parser == "mineru":
+            from app.document.mineru_parser import load_mineru_pdf
+            return load_mineru_pdf(file_path, self.settings)
+        return load_pdf(file_path)
 
 
 class MarkdownLoader(BaseLoader):
@@ -68,9 +68,9 @@ def _read_text_file(file_path: str) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
-def get_loader(file_type: str) -> BaseLoader:
+def get_loader(file_type: str, settings: Settings | None = None) -> BaseLoader:
     if file_type == "pdf":
-        return PDFLoader()
+        return PDFLoader(settings)
     if file_type in {"md", "markdown"}:
         return MarkdownLoader()
     if file_type == "txt":

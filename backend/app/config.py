@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 from pathlib import Path
 
 from pydantic import Field
@@ -34,6 +35,11 @@ class Settings(BaseSettings):
     sqlite_path: Path = Path("./data/sqlite/app.db")
 
     chunk_size: int = 500
+    pdf_parser: Literal["mineru", "native"] = "mineru"
+    mineru_python: Path = Path(__file__).resolve().parents[2] / "data/tools/mineru/venv/Scripts/python.exe"
+    mineru_home: Path = Path(__file__).resolve().parents[2] / "data/tools/mineru"
+    mineru_cache_dir: Path = Path(__file__).resolve().parents[2] / "data/parsed/mineru-upload"
+    mineru_timeout: int = 1800
     chunk_overlap: int = 80
     vector_top_k: int = 10
     bm25_top_k: int = 10

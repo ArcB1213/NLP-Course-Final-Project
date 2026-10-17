@@ -718,7 +718,7 @@ function renderDocuments(docs) {
       <div class="doc-meta">
         <span>${d.file_type} · ${d.chunk_count} 块</span>
         <span class="right">
-          <span class="status-pill ${d.status}">${d.status}</span>
+          <span class="status-pill ${d.status}" title="${escapeHTML((d.processing_warnings || []).join('\n'))}">${d.status === 'indexed_partial' ? '部分识别' : d.status}</span>
           <button class="doc-del" data-id="${d.id}">删除</button>
         </span>
       </div>`;

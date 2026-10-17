@@ -1,6 +1,7 @@
 import re
 
 from app.core.schemas import ChunkCreate, RawPage
+from app.document.processing_report import WARNING_LABELS
 
 
 SENTENCE_PATTERN = re.compile(r"([^。？！；\n]+[。？！；\n]?)")
@@ -17,6 +18,10 @@ class ChineseTextSplitter:
             pieces = self._split_text(page.text)
             heading = page.metadata.get("heading")
             for piece in pieces:
+                warnings = page.metadata.get("warnings", [])
+                if warnings:
+                    note = "；".join(WARNING_LABELS[warning] for warning in warnings)
+                    piece = f"【资料解析提示：{note}。以下仅为已提取的文字。】\n{piece}"
                 chunks.append(
                     ChunkCreate(
                         document_id=document_id,
@@ -35,6 +40,12 @@ class ChineseTextSplitter:
         current = ""
 
         for paragraph in paragraphs:
+            if _is_table(paragraph) or _is_display_math(paragraph) or paragraph.startswith("<table"):
+                if current:
+                    chunks.append(current.strip())
+                    current = ""
+                chunks.extend(self._split_table(paragraph) if _is_table(paragraph) else [paragraph])
+                continue
             units = self._split_paragraph(paragraph)
             for unit in units:
                 if not current:
@@ -48,6 +59,20 @@ class ChineseTextSplitter:
         if current.strip():
             chunks.append(current.strip())
         return chunks
+
+    def _split_table(self, table: str) -> list[str]:
+        lines = table.splitlines()
+        header = "\n".join(lines[:2])
+        chunks: list[str] = []
+        current = header
+        for row in lines[2:]:
+            if current != header and len(current) + len(row) + 1 > self.chunk_size:
+                chunks.append(current)
+                current = header
+            current += "\n" + row
+        if current != header:
+            chunks.append(current)
+        return chunks or [table]
 
     def _split_paragraph(self, paragraph: str) -> list[str]:
         if len(paragraph) <= self.chunk_size:
@@ -72,4 +97,15 @@ class ChineseTextSplitter:
             return next_text
         overlap = previous[-self.chunk_overlap :]
         return f"{overlap}{next_text}"
+
+
+def _is_table(text: str) -> bool:
+    lines = text.splitlines()
+    return len(lines) >= 2 and lines[0].strip().startswith("|") and bool(
+        re.fullmatch(r"\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*", lines[1])
+    )
+
+
+def _is_display_math(text: str) -> bool:
+    return text.startswith("$$") and text.endswith("$$") and len(text) > 4
 

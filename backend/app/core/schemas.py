@@ -33,6 +33,7 @@ class DocumentRead(BaseModel):
     status: str
     chunk_count: int
     created_at: datetime
+    processing_warnings: list[str] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 

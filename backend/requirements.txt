@@ -5,7 +5,7 @@ pydantic
 pydantic-settings
 python-dotenv
 sqlalchemy
-pymupdf
+pymupdf>=1.23.0
 markdown
 jieba
 rank-bm25
