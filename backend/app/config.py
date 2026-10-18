@@ -54,7 +54,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
     memory_enabled: bool = True
     memory_recent_turns: int = 8
-    memory_summary_threshold: int = 12
+    memory_summary_threshold: int = Field(default=12, ge=1)
+    memory_summary_interval: int = Field(default=6, ge=1)
+    memory_batch_interval: int = Field(default=6, ge=1)
     memory_recall_top_k: int = 5
 
     model_config = SettingsConfigDict(

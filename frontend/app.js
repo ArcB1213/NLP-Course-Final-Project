@@ -585,6 +585,7 @@ async function streamChat(payload, agentMsg) {
         agentMsg.bubble.textContent = event.message || "发生错误";
         return;
       } else if (event.type === "done") {
+        if (event.agent_trace && metaInfo) metaInfo.agent_trace = event.agent_trace;
         if (firstDelta) {
           renderMarkdown(agentMsg.bubble, answerText || "(无回复)");
         } else {
@@ -701,6 +702,13 @@ function traceStepFields(step) {
       ["会话", input.session_id],
       ["任务", input.task_type],
       ["回答字数", output.answer_chars],
+      ["历史已保存", output.history_saved],
+      ["新增长期记忆", output.added],
+      ["合并更新", output.merged],
+      ["删除", output.removed],
+      ["未写入", output.ignored],
+      ["完成六轮整理", output.batch_processed],
+      ["处理说明", output.reasons],
     ].filter(([, value]) => value !== undefined && value !== null && value !== "");
   }
   if (step.step_type === "route") {

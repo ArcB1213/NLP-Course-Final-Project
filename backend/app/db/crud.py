@@ -5,7 +5,10 @@ from sqlalchemy import delete, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core.schemas import ChunkCreate
-from app.db.models import ChatMessage, Chunk, ConversationSession, ConversationSummary, Document, MemoryRecord
+from app.db.models import (
+    ChatMessage, Chunk, ConversationSession, ConversationSummary, Document,
+    MemoryEvidence, MemoryProcessingState, MemoryRecord,
+)
 
 
 def create_document(
@@ -159,6 +162,7 @@ def create_chat_message(
     role: str,
     content: str,
     task_type: str | None = None,
+    commit: bool = True,
 ) -> ChatMessage:
     message = ChatMessage(
         id=uuid4().hex,
@@ -171,8 +175,9 @@ def create_chat_message(
     session = db.get(ConversationSession, session_id)
     if session is not None:
         session.updated_at = datetime.utcnow()
-    db.commit()
-    db.refresh(message)
+    if commit:
+        db.commit()
+        db.refresh(message)
     return message
 
 
@@ -302,12 +307,18 @@ def delete_memory_record(db: Session, memory_id: str) -> bool:
     if record is None:
         return False
     db.delete(record)
+    for evidence in db.scalars(select(MemoryEvidence).where(MemoryEvidence.memory_id == memory_id)):
+        evidence.memory_id = None
+        evidence.evidence_type = "retired"
     db.commit()
     return True
 
 
 def delete_all_memory_records(db: Session) -> int:
     result = db.execute(delete(MemoryRecord))
+    for evidence in db.scalars(select(MemoryEvidence).where(MemoryEvidence.evidence_type != "turn")):
+        evidence.memory_id = None
+        evidence.evidence_type = "retired"
     db.commit()
     return result.rowcount or 0
 
@@ -318,6 +329,8 @@ def delete_session(db: Session, session_id: str) -> bool:
         return False
     db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
     db.execute(delete(ConversationSummary).where(ConversationSummary.session_id == session_id))
+    db.execute(delete(MemoryProcessingState).where(MemoryProcessingState.session_id == session_id))
+    db.execute(delete(MemoryEvidence).where(MemoryEvidence.session_id == session_id, MemoryEvidence.evidence_type == "turn"))
     db.delete(session)
     db.commit()
     return True

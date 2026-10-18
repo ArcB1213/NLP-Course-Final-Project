@@ -7,6 +7,10 @@ import httpx
 CONTINUE_PROMPT = "继续完成上一条回答，从中断处接着写，不要重复已经输出的内容，不要输出开场白。"
 
 
+class IncompleteResponseError(RuntimeError):
+    pass
+
+
 class DeepSeekClient:
     def __init__(self, api_key: str, base_url: str, default_model: str, timeout: float = 60.0,
                  default_thinking: bool | None = None):
@@ -25,6 +29,7 @@ class DeepSeekClient:
         continue_on_length: bool = False,
         max_continuations: int = 2,
         thinking: bool | None = None,
+        require_complete: bool = False,
     ) -> str:
         if not self.api_key:
             raise RuntimeError("DEEPSEEK_API_KEY is not configured")
@@ -54,6 +59,8 @@ class DeepSeekClient:
                 choice = choices[0]
                 content = choice.get("message", {}).get("content", "")
                 finish_reason = choice.get("finish_reason")
+                if require_complete and finish_reason != "stop":
+                    raise IncompleteResponseError(f"Incomplete LLM response: {finish_reason}")
                 if content:
                     content_parts.append(content)
                 elif not content_parts:

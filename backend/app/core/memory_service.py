@@ -1,5 +1,4 @@
 import json
-import re
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Literal
 
@@ -8,7 +7,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.core.conversation_summary import (
+    CONTEXT_CHARS, completed_turns, covered_count, read_summary, update_summary,
+)
 from app.core.llm_client import DeepSeekClient
+from app.core.memory_writer import MemoryWriter, WriteReport
 from app.db import crud
 from app.db.models import ChatMessage, MemoryRecord
 from app.retrieval.embedder import Embedder
@@ -27,26 +30,6 @@ Do not treat memory as course evidence, and do not cite it as a source.
 """.strip()
 
 
-SUMMARY_PROMPT = """
-Update the conversation summary for a Chinese NLP course assistant.
-Keep only information useful for future turns: discussed topics, user goals,
-generated tasks, unresolved questions, and learning difficulties.
-Return a concise Chinese summary.
-""".strip()
-
-
-EXTRACT_MEMORY_PROMPT = """
-Extract durable learner memories from the latest conversation turn.
-Only keep useful long-term facts such as preferences, learning goals, weak
-knowledge points, repeated mistakes, or user notes. Do not store secrets,
-API keys, passwords, or one-off wording.
-
-Return JSON only:
-{"memories":[{"kind":"preference|learning_goal|weakness|mistake|custom_note","content":"...","importance":1-5}]}
-If there is no durable memory, return {"memories":[]}.
-""".strip()
-
-
 MEMORY_RESOLVE_SYSTEM_PROMPT = """
 You are the memory intent resolver for a Chinese NLP course assistant.
 Classify the current user request and resolve any references to prior dialogue.
@@ -56,7 +39,7 @@ Return JSON only:
   "mode": "normal|rag_with_memory|memory_only",
   "answer_query": "standalone request for answer generation",
   "retrieval_query": "short standalone course-knowledge query for RAG, or empty for memory_only",
-  "referenced_turns": ["brief summaries of prior turns used, or message roles if exact turns are unclear"],
+  "referenced_turns": ["exact source message IDs used or needed from the history catalog"],
   "confidence": "high|medium|low",
   "reason": "brief reason"
 }
@@ -70,6 +53,9 @@ retrieval_query rules:
 - For normal and rag_with_memory, write a standalone knowledge query suitable for course-document retrieval.
 - Do not include deictic words such as "刚才", "上面", "之前", "第三题", "这道题", "它", or "你记得".
 - For memory_only, retrieval_query must be an empty string.
+History catalog entries locate omitted originals. If original content is needed,
+select its message ID in referenced_turns; do not invent its contents. If the
+reference is ambiguous, ask for clarification in answer_query, not a guessed topic.
 """.strip()
 
 
@@ -80,16 +66,9 @@ about content generated earlier, recall it directly and explain it clearly.
 Do not claim course-document citations from memory. If course retrieval was
 insufficient, say the explanation is based on conversation memory and general
 course knowledge rather than retrieved course evidence.
+Use the original message when available. If the requested original is absent,
+ask for clarification instead of reconstructing exact questions from a summary.
 """.strip()
-
-
-SECRET_PATTERNS = [
-    re.compile(r"api[_-]?key\s*[:=]", re.IGNORECASE),
-    re.compile(r"password\s*[:=]", re.IGNORECASE),
-    re.compile(r"secret\s*[:=]", re.IGNORECASE),
-    re.compile(r"token\s*[:=]", re.IGNORECASE),
-    re.compile(r"[A-Za-z0-9_\-]{40,}"),
-]
 
 
 DEICTIC_RETRIEVAL_TERMS = (
@@ -120,6 +99,8 @@ class LoadedMemoryContext:
     summary: str | None = None
     recent_messages: list[ChatMessage] = field(default_factory=list)
     long_term_memories: list[MemoryRecord] = field(default_factory=list)
+    history: list[ChatMessage] = field(default_factory=list)
+    referenced_messages: list[ChatMessage] = field(default_factory=list)
 
     @property
     def has_context(self) -> bool:
@@ -198,6 +179,8 @@ class MemoryService:
         self.embedder = embedder
         self.vector_store = vector_store or FaissVectorStore(settings.memory_index_dir)
         self.resolver = resolver or MemoryIntentResolver(llm)
+        self.writer = MemoryWriter(llm, settings.memory_batch_interval)
+        self._index_snapshot = None
 
     def load_context(self, db: Session, session_id: str | None, query: str) -> LoadedMemoryContext:
         session = crud.get_or_create_session(db, session_id)
@@ -205,27 +188,59 @@ class MemoryService:
             return LoadedMemoryContext(session_id=session.id)
 
         summary = crud.get_conversation_summary(db, session.id)
-        recent = crud.list_recent_messages(db, session.id, self.settings.memory_recent_turns * 2)
+        stored = read_summary(summary.content) if summary else None
+        history = crud.list_session_messages(db, session.id)
+        covered = covered_count(history, summary.last_message_id) if summary and stored else 0
+        recent = history[covered:]
         memories = self._recall_memories(db, query, self.settings.memory_recall_top_k)
         return LoadedMemoryContext(
             session_id=session.id,
-            summary=summary.content if summary else None,
+            summary=stored.state.model_dump_json() if stored and covered else None,
             recent_messages=recent,
             long_term_memories=memories,
+            history=history,
         )
 
     async def resolve_request(self, context: LoadedMemoryContext, query: str) -> MemoryResolvedRequest:
         if not context.has_context:
             return MemoryResolvedRequest(answer_query=query, retrieval_query=query, mode="normal", confidence="high")
-        return await self.resolver.resolve(self.build_context_text(context), query)
+        initial_context = self.build_context_text(context)
+        resolution = await self.resolver.resolve(initial_context, query)
+        by_id = {message.id: message for message in context.history}
+        context.referenced_messages = [by_id[mid] for mid in dict.fromkeys(resolution.referenced_turns) if mid in by_id]
+        if context.referenced_messages:
+            # Re-resolve after loading originals, so archive labels cannot become fabricated answers.
+            if any(f"[message_id={msg.id} role={msg.role}]" not in initial_context for msg in context.referenced_messages):
+                resolution = await self.resolver.resolve(self.build_context_text(context), query)
+            if resolution.mode == "rag_with_memory":
+                resolution.answer_query += "\n\nReferenced conversation originals:\n" + _format_messages(context.referenced_messages)
+        return resolution
 
     def build_context_text(self, context: LoadedMemoryContext) -> str:
         conversation_parts: list[str] = []
         if context.summary:
             conversation_parts.append(f"Summary: {context.summary}")
-        if context.recent_messages:
-            recent_lines = [f"{msg.role}: {_trim(msg.content, 900)}" for msg in context.recent_messages]
-            conversation_parts.append("Recent turns:\n" + "\n".join(recent_lines))
+        selected_ids = {msg.id for msg in context.referenced_messages}
+        selected = _format_messages(context.referenced_messages)
+        if selected:
+            conversation_parts.append("Referenced originals:\n" + selected)
+        budget = CONTEXT_CHARS - sum(len(part) for part in conversation_parts)
+        recent_parts: list[str] = []
+        for turn in reversed(completed_turns(context.recent_messages)):
+            text = _format_messages([msg for msg in turn if msg.id not in selected_ids])
+            if len(text) > budget:
+                break
+            recent_parts.insert(0, text)
+            selected_ids.update(msg.id for msg in turn)
+            budget -= len(text)
+        if recent_parts:
+            conversation_parts.append("Recent turns:\n" + "\n".join(recent_parts))
+        omitted = [turn for turn in completed_turns(context.history) if turn[-1].id not in selected_ids]
+        if omitted:
+            conversation_parts.append("History catalog (originals available by message ID):\n" + "\n".join(
+                f"turn={i + 1} user_message_id={turn[0].id} assistant_message_id={turn[-1].id} task={turn[-1].task_type}"
+                for i, turn in enumerate(completed_turns(context.history)) if turn in omitted
+            ))
 
         memory_lines = [
             f"- ({memory.kind}, importance {memory.importance}) {memory.content}"
@@ -294,13 +309,17 @@ class MemoryService:
         user_query: str,
         assistant_answer: str,
         task_type: str,
-    ) -> None:
+        confidence: str | None = None,
+        message: str | None = None,
+        sources: list[dict] | None = None,
+    ) -> WriteReport:
         user_message = crud.create_chat_message(
             db,
             session_id=session_id,
             role="user",
             content=user_query,
             task_type=task_type,
+            commit=False,
         )
         assistant_message = crud.create_chat_message(
             db,
@@ -308,19 +327,24 @@ class MemoryService:
             role="assistant",
             content=assistant_answer,
             task_type=task_type,
+            commit=False,
         )
+        db.commit()
         if not self.settings.memory_enabled:
-            return
+            return WriteReport(reasons=["memory_disabled"])
 
         await self._maybe_update_summary(db, session_id)
-        await self._extract_long_term_memories(
-            db,
-            session_id=session_id,
-            source_message_id=assistant_message.id,
-            user_query=user_query,
-            assistant_answer=assistant_answer,
-            fallback_source_message_id=user_message.id,
+        report = await self.writer.process_turn(
+            db, user_message, assistant_message,
+            {"task_type": task_type, "confidence": confidence, "message": message, "sources": sources or []},
         )
+        if report.changed:
+            try:
+                self.rebuild_memory_index(db)
+            except (RuntimeError, OSError, ValueError):
+                self._index_snapshot = None
+                report.reasons.append("memory_index_rebuild_deferred")
+        return report
 
     def rebuild_memory_index(self, db: Session) -> None:
         memories = crud.list_memory_records(db)
@@ -329,23 +353,22 @@ class MemoryService:
             return
         embeddings = self.embedder.encode_texts([memory.content for memory in memories])
         self.vector_store.build([memory.id for memory in memories], embeddings)
+        self._index_snapshot = tuple(sorted((m.id, m.content) for m in memories))
 
     def _recall_memories(self, db: Session, query: str, top_k: int) -> list[MemoryRecord]:
         memories = crud.list_memory_records(db)
         if not memories or top_k <= 0:
             return []
         try:
+            if self._index_snapshot != tuple(sorted((m.id, m.content) for m in memories)):
+                self.rebuild_memory_index(db)
             query_embedding = self.embedder.encode_query(query)
             results = self.vector_store.search(query_embedding, top_k)
         except (RuntimeError, OSError, ValueError):
-            self.rebuild_memory_index(db)
-            try:
-                query_embedding = self.embedder.encode_query(query)
-                results = self.vector_store.search(query_embedding, top_k)
-            except (RuntimeError, OSError, ValueError):
-                results = []
+            results = []
 
-        memory_ids = [memory_id for memory_id, _score in results]
+        valid_ids = {m.id for m in memories}
+        memory_ids = [memory_id for memory_id, _score in results if memory_id in valid_ids]
         if not memory_ids:
             ranked = sorted(memories, key=lambda item: (item.importance, item.updated_at), reverse=True)
             memory_ids = [memory.id for memory in ranked[:top_k]]
@@ -353,98 +376,12 @@ class MemoryService:
         return crud.get_memory_records_by_ids(db, memory_ids)
 
     async def _maybe_update_summary(self, db: Session, session_id: str) -> None:
-        message_count = crud.count_session_messages(db, session_id)
-        if message_count < self.settings.memory_summary_threshold:
-            return
-
-        current_summary = crud.get_conversation_summary(db, session_id)
-        messages = crud.get_session_messages_after(
-            db,
-            session_id,
-            current_summary.last_message_id if current_summary else None,
+        await update_summary(
+            db, session_id, self.llm,
+            first_turn=self.settings.memory_summary_threshold,
+            interval=self.settings.memory_summary_interval,
+            keep_turns=self.settings.memory_recent_turns,
         )
-        if not messages:
-            return
-
-        content = _format_messages(messages)
-        previous = current_summary.content if current_summary else "None"
-        try:
-            summary = await self.llm.chat(
-                messages=[
-                    {"role": "system", "content": SUMMARY_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Previous summary:\n{previous}\n\nNew messages:\n{content}",
-                    },
-                ],
-                temperature=0.0,
-                max_tokens=600,
-            )
-        except (RuntimeError, httpx.HTTPError):
-            return
-
-        crud.upsert_conversation_summary(
-            db,
-            session_id=session_id,
-            content=summary.strip(),
-            last_message_id=messages[-1].id,
-        )
-
-    async def _extract_long_term_memories(
-        self,
-        db: Session,
-        *,
-        session_id: str,
-        source_message_id: str,
-        user_query: str,
-        assistant_answer: str,
-        fallback_source_message_id: str,
-    ) -> None:
-        if _contains_secret(user_query) or _contains_secret(assistant_answer):
-            return
-        try:
-            content = await self.llm.chat(
-                messages=[
-                    {"role": "system", "content": EXTRACT_MEMORY_PROMPT},
-                    {
-                        "role": "user",
-                        "content": (
-                            f"User:\n{_trim(user_query, 1200)}\n\n"
-                            f"Assistant:\n{_trim(assistant_answer, 1600)}"
-                        ),
-                    },
-                ],
-                temperature=0.0,
-                max_tokens=500,
-            )
-            payload = _parse_json_object(content)
-        except (RuntimeError, httpx.HTTPError, ValueError, json.JSONDecodeError):
-            return
-
-        created = False
-        for item in payload.get("memories") or []:
-            kind = str(item.get("kind") or "custom_note")
-            if kind not in {"preference", "learning_goal", "weakness", "mistake", "custom_note"}:
-                kind = "custom_note"
-            memory_content = str(item.get("content") or "").strip()
-            if not memory_content or _contains_secret(memory_content):
-                continue
-            if crud.find_memory_by_content(db, memory_content) is not None:
-                continue
-            importance = item.get("importance") or 3
-            crud.create_memory_record(
-                db,
-                kind=kind,
-                content=memory_content,
-                importance=int(importance),
-                source_session_id=session_id,
-                source_message_id=source_message_id or fallback_source_message_id,
-            )
-            created = True
-
-        if created:
-            self.rebuild_memory_index(db)
-
 
 def _normalize_resolution(payload: MemoryResolutionPayload, original_query: str) -> MemoryResolvedRequest:
     answer_query = payload.answer_query.strip() or original_query
@@ -484,18 +421,7 @@ def _normalize_resolution(payload: MemoryResolutionPayload, original_query: str)
 
 
 def _format_messages(messages: list[ChatMessage]) -> str:
-    return "\n".join(f"{message.role}: {_trim(message.content, 1000)}" for message in messages)
-
-
-def _trim(text: str, limit: int) -> str:
-    normalized = " ".join(str(text or "").split())
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[:limit].rstrip() + "..."
-
-
-def _contains_secret(text: str) -> bool:
-    return any(pattern.search(text or "") for pattern in SECRET_PATTERNS)
+    return "\n".join(f"[message_id={message.id} role={message.role}]\n{message.content}" for message in messages)
 
 
 def _contains_deictic_term(text: str) -> bool:

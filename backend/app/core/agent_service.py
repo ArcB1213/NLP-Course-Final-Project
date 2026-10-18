@@ -157,6 +157,7 @@ class AgentService:
         yield meta
 
         answer_parts: list[str] = []
+        stream_failed = False
         for index, item in enumerate(prepared, start=1):
             if len(prepared) > 1:
                 heading = f"\n\n### {_subtask_title(item.subtask, index)}\n\n"
@@ -185,6 +186,8 @@ class AgentService:
                     continue
                 if event.get("type") == "delta":
                     answer_parts.append(str(event.get("text") or ""))
+                elif event.get("type") == "error":
+                    stream_failed = True
                 yield event
 
             state.trace.steps.append(
@@ -203,13 +206,13 @@ class AgentService:
                 answer="".join(answer_parts),
                 sources=all_sources,
                 confidence=confidence,  # type: ignore[arg-type]
-                message=message,
+                message="llm_error" if stream_failed else message,
                 session_id=memory_context.session_id,
             ),
             memory_context.session_id,
             state.trace,
         )
-        yield {"type": "done"}
+        yield {"type": "done", **({"agent_trace": state.trace.model_dump()} if debug_trace else {})}
 
     async def _prepare_memory_context(
         self,
@@ -309,7 +312,7 @@ class AgentService:
             session_id=memory_context.session_id,
         )
         await self._remember_turn(db, request, response, memory_context.session_id, trace)
-        yield {"type": "done"}
+        yield {"type": "done", **({"agent_trace": trace.model_dump()} if _debug_trace_enabled(request) else {})}
 
     async def _memory_fallback_response(
         self,
@@ -386,7 +389,7 @@ class AgentService:
             session_id=memory_context.session_id,
         )
         await self._remember_turn(db, request, response, memory_context.session_id, trace)
-        yield {"type": "done"}
+        yield {"type": "done", **({"agent_trace": trace.model_dump()} if _debug_trace_enabled(request) else {})}
 
     async def _remember_turn(
         self,
@@ -398,18 +401,21 @@ class AgentService:
     ) -> None:
         if self.memory_service is None or not session_id:
             return
-        await self.memory_service.remember_turn(
+        report = await self.memory_service.remember_turn(
             db,
             session_id=session_id,
             user_query=request.query,
             assistant_answer=response.answer,
             task_type=response.task_type,
+            confidence=response.confidence,
+            message=response.message,
+            sources=[chunk.model_dump() for chunk in response.sources],
         )
         trace.steps.append(
             AgentStep(
                 step_type="memory_write",
                 input={"session_id": session_id, "task_type": response.task_type},
-                output={"answer_chars": len(response.answer)},
+                output={"answer_chars": len(response.answer), "history_saved": True, **report.model_dump()},
             )
         )
 

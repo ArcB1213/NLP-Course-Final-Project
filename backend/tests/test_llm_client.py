@@ -8,6 +8,20 @@ from app.config import Settings
 from app.core.llm_client import DeepSeekClient
 
 
+def test_summary_rejects_length_even_when_content_is_valid_json(monkeypatch):
+    def respond(request):
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": '{"current_task":"partial"}'}, "finish_reason": "length",
+        }]})
+
+    original = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: original(
+        transport=httpx.MockTransport(respond), **kwargs))
+    client = DeepSeekClient("test-key", "https://example.test", "deepseek-v4-flash")
+    with pytest.raises(RuntimeError, match="Incomplete LLM response"):
+        asyncio.run(client.chat(messages=[], require_complete=True))
+
+
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("override,expected", [(None, "disabled"), (True, "enabled")])
 def test_agent_thinking_applies_to_both_transports(monkeypatch, stream, override, expected):
