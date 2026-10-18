@@ -8,17 +8,18 @@ from threading import Lock
 
 from app.config import Settings
 from app.core.schemas import RawPage
+from app.document.title_resolver import resolve_titles_sync
 
 
 _parse_lock = Lock()
 
 
-def load_mineru_pdf(file_path: str, settings: Settings) -> list[RawPage]:
+def load_mineru_pdf(file_path: str, settings: Settings, *, resolve_headings: bool = True) -> list[RawPage]:
     source = Path(file_path).resolve()
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
     output = settings.mineru_cache_dir.resolve() / f"{digest}-standard-v1"
     with _parse_lock:
-        result = output / "pages-text-v2.json"
+        result = output / "pages-text-v3.json"
         if not result.exists():
             python = settings.mineru_python.resolve()
             if not python.is_file():
@@ -46,4 +47,6 @@ def load_mineru_pdf(file_path: str, settings: Settings) -> list[RawPage]:
                 result.unlink(missing_ok=True)
                 raise ValueError(f"MinerU 解析失败，日志：{output / 'run.log'}")
         pages = [RawPage.model_validate(page) for page in json.loads(result.read_text(encoding="utf-8"))]
+        if resolve_headings:
+            pages = resolve_titles_sync(pages, settings, output / "titles")
     return pages

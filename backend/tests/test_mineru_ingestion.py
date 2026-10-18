@@ -1,5 +1,6 @@
 import json
 import base64
+import hashlib
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -33,7 +34,7 @@ def test_mineru_subprocess_configuration_and_cache(tmp_path, monkeypatch):
     def run(command, **kwargs):
         calls.append((command, kwargs))
         output = Path(command[-1])
-        (output / "pages-text-v2.json").write_text(json.dumps([{"text": "识别内容", "page": 3, "metadata": {}}]), encoding="utf-8")
+        (output / "pages-text-v3.json").write_text(json.dumps([{"text": "识别内容", "page": 3, "metadata": {}}]), encoding="utf-8")
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(mineru_parser.subprocess, "run", run)
@@ -59,7 +60,30 @@ def test_mineru_failure_is_visible_and_not_cached(tmp_path, monkeypatch):
     monkeypatch.setattr(mineru_parser.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1))
     with pytest.raises(ValueError, match="MinerU 解析失败"):
         mineru_parser.load_mineru_pdf(str(source), settings)
-    assert not list(settings.mineru_cache_dir.rglob("pages-text-v2.json"))
+    assert not list(settings.mineru_cache_dir.rglob("pages-text-v3.json"))
+
+
+def test_cached_mineru_pages_pass_through_title_resolver(tmp_path, monkeypatch):
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"cached PDF")
+    settings = Settings(_env_file=None, mineru_cache_dir=tmp_path / "cache")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    output = settings.mineru_cache_dir / f"{digest}-standard-v1"
+    output.mkdir(parents=True)
+    (output / "pages-text-v3.json").write_text(json.dumps([{"text": "Body", "page": 1, "metadata": {}}]), encoding="utf-8")
+    calls = []
+
+    def resolver(pages, config, cache_dir):
+        calls.append(cache_dir)
+        pages[0].metadata["heading"] = "Resolved title"
+        return pages
+
+    monkeypatch.setattr(mineru_parser, "resolve_titles_sync", resolver)
+    result = mineru_parser.load_mineru_pdf(str(source), settings)
+    assert result[0].metadata["heading"] == "Resolved title"
+    assert calls == [output / "titles"]
+    raw = mineru_parser.load_mineru_pdf(str(source), settings, resolve_headings=False)
+    assert "heading" not in raw[0].metadata and len(calls) == 1
 
 
 def test_reparse_replaces_stale_chunks_and_preserves_document_on_parse_failure(tmp_path, monkeypatch):
@@ -81,6 +105,16 @@ def test_reparse_replaces_stale_chunks_and_preserves_document_on_parse_failure(t
         assert len(chunks) == 1 and chunks[0].page == 56
         assert "新表格内容" in chunks[0].text and "旧内容" not in chunks[0].text
         assert doc.created_at == created and doc.status == "indexed_partial" and doc.chunk_count == 1
+
+        report_path = (tmp_path / "source.pdf").with_suffix(".processing.json")
+        original_report = report_path.read_bytes()
+        pages[:] = [RawPage(text="Incomplete replacement", page=21, metadata={
+            "title_resolution": {"status": "failed"}, "warnings": ["title_resolution_failed"]})]
+        with pytest.raises(ValueError, match="已保留原有分块和解析报告"):
+            service.reparse_document(db, document_id="doc")
+        assert report_path.read_bytes() == original_report
+        assert list(db.scalars(select(Chunk)).all()) == chunks
+        assert doc.chunk_count == 1
 
         def fail(path):
             raise ValueError("parse failed")
@@ -137,13 +171,16 @@ def test_real_mineru_renderer_excludes_images_but_preserves_text_and_math(tmp_pa
     fixture = {"schema": "docvortex.middle", "schema_version": "2.0", "metadata": {
         "file_suffix": "pdf", "producer": {"name": "mineru", "version": "4.0.12"}},
         "pages": [{"page_idx": 0, "blocks": [
+            {"type": "header", "index": 0, "content": [{"type": "text", "content": "Header main title"}]},
             {"type": "text", "index": 0, "content": [{"type": "text", "content": "正文 QLoRA"}]},
             {"type": "equation", "index": 1, "content": "x_{i+1}=y_i"},
             {"type": "image", "index": 2, "content": [{"type": "image_body", "index": 2, image_field: image_value, "content": ""}]},
         ]}], "is_full_document": True}
     for index, block in enumerate(fixture["pages"][0]["blocks"]):
-        block["bbox"] = [0.1, index * 0.3, 0.9, index * 0.3 + 0.2]
+        block["index"] = index
+        block["bbox"] = [0.1, index * 0.2 + 0.02, 0.9, index * 0.2 + 0.18]
         if block["type"] == "image":
+            block["content"][0]["index"] = index
             block["content"][0]["bbox"] = block["bbox"]
     (tmp_path / "middle_json.json").write_text(json.dumps(fixture, ensure_ascii=False), encoding="utf-8")
     # A control run must reproduce the unsafe default rendering; otherwise the
@@ -153,8 +190,11 @@ def test_real_mineru_renderer_excludes_images_but_preserves_text_and_math(tmp_pa
     worker = Path(__file__).resolve().parents[1] / "mineru_worker.py"
     run = subprocess.run([str(python), str(worker), str(tmp_path / "unused.pdf"), str(tmp_path), "--render-only"], capture_output=True, text=True, encoding="utf-8")
     assert run.returncode == 0, run.stderr
-    page = json.loads((tmp_path / "pages-text-v2.json").read_text(encoding="utf-8"))[0]
+    page = json.loads((tmp_path / "pages-text-v3.json").read_text(encoding="utf-8"))[0]
     assert "正文 QLoRA" in page["text"] and "x_{i+1}=y_i" in page["text"]
     assert "data:image" not in page["text"] and payload not in page["text"]
     assert "![" not in page["text"] and "images/figure" not in page["text"]
     assert "image_semantics_not_extracted" in page["metadata"]["warnings"]
+    assert any(c["text"] == "正文 QLoRA" for c in page["metadata"]["title_candidates"])
+    assert any(c["text"] == "Header main title" and c["type"] == "header" for c in page["metadata"]["title_candidates"])
+    assert all("base64" not in c["text"] for c in page["metadata"]["title_candidates"])

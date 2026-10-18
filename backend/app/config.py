@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     mineru_home: Path = Path(__file__).resolve().parents[2] / "data/tools/mineru"
     mineru_cache_dir: Path = Path(__file__).resolve().parents[2] / "data/parsed/mineru-upload"
     mineru_timeout: int = 1800
+    pdf_title_resolution: bool = True
     chunk_overlap: int = 80
     vector_top_k: int = 10
     bm25_top_k: int = 10

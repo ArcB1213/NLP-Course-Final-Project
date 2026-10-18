@@ -18,6 +18,9 @@ class ChineseTextSplitter:
             pieces = self._split_text(page.text)
             heading = page.metadata.get("heading")
             for piece in pieces:
+                context = page.metadata.get("retrieval_context")
+                if context:
+                    piece = f"【{context}】\n{piece}"
                 warnings = page.metadata.get("warnings", [])
                 if warnings:
                     note = "；".join(WARNING_LABELS[warning] for warning in warnings)

@@ -23,17 +23,21 @@ def main():
     try:
         with SessionLocal() as db:
             documents = [document for document in crud.list_documents(db) if document.file_type == "pdf"]
-            for document in documents:
-                print(json.dumps({"starting": document.id, "filename": document.filename}, ensure_ascii=False), flush=True)
-                try:
-                    service.reparse_document(db, document_id=document.id, rebuild=False)
-                    result = {"id": document.id, "filename": document.filename, "status": document.status, "chunks": document.chunk_count}
-                except Exception as exc:
-                    db.rollback()
-                    result = {"id": document.id, "error": str(exc)}
-                results.append(result)
-                print(json.dumps(result, ensure_ascii=False), flush=True)
-            service.retriever.rebuild(db)
+            try:
+                for document in documents:
+                    print(json.dumps({"starting": document.id, "filename": document.filename}, ensure_ascii=False), flush=True)
+                    try:
+                        service.reparse_document(db, document_id=document.id, rebuild=False)
+                        result = {"id": document.id, "filename": document.filename, "status": document.status, "chunks": document.chunk_count}
+                    except Exception as exc:
+                        db.rollback()
+                        result = {"id": document.id, "error": str(exc)}
+                    results.append(result)
+                    print(json.dumps(result, ensure_ascii=False), flush=True)
+            finally:
+                # Ctrl+C still needs indexes for documents already committed.
+                db.rollback()
+                service.retriever.rebuild(db)
     finally:
         (backup / "results.json").write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({"backup": str(backup.resolve()), "pdf_count": len(results)}, ensure_ascii=False), flush=True)

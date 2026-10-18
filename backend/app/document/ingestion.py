@@ -48,6 +48,10 @@ class IngestionService:
             raise ValueError("Document not found")
         file_path = Path(document.file_path)
         pages = get_loader(document.file_type, self.settings).load(str(file_path))
+        failed_titles = [page.page for page in pages
+                         if page.metadata.get("title_resolution", {}).get("status") == "failed"]
+        if document.chunk_count and failed_titles:
+            raise ValueError(f"第 {failed_titles} 页标题处理失败，已保留原有分块和解析报告；请检查标题诊断后重试。")
         report = save_processing_report(file_path, pages) if document.file_type == "pdf" else None
         splitter = ChineseTextSplitter(self.settings.chunk_size, self.settings.chunk_overlap)
         chunks = splitter.split_pages(pages, document_id=document_id, source_file=document.filename)

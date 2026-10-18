@@ -8,7 +8,12 @@ CONTINUE_PROMPT = "继续完成上一条回答，从中断处接着写，不要�
 
 
 class IncompleteResponseError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, finish_reason: str | None = None,
+                 usage: dict | None = None, max_tokens: int | None = None):
+        super().__init__(message)
+        self.finish_reason = finish_reason
+        self.usage = usage or {}
+        self.max_tokens = max_tokens
 
 
 class DeepSeekClient:
@@ -60,7 +65,10 @@ class DeepSeekClient:
                 content = choice.get("message", {}).get("content", "")
                 finish_reason = choice.get("finish_reason")
                 if require_complete and finish_reason != "stop":
-                    raise IncompleteResponseError(f"Incomplete LLM response: {finish_reason}")
+                    raise IncompleteResponseError(
+                        f"Incomplete LLM response: finish_reason={finish_reason}, max_tokens={max_tokens}, usage={data.get('usage', {})}",
+                        finish_reason=finish_reason, usage=data.get("usage"), max_tokens=max_tokens,
+                    )
                 if content:
                     content_parts.append(content)
                 elif not content_parts:

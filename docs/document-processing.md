@@ -25,14 +25,43 @@ $env:MINERU_MODEL_BASE_DIR = "$PWD/data/tools/mineru/models"
 显式设置 `PDF_PARSER=native` 才会使用原生提取。不要将 MinerU 安装进后端 conda 环境。
 
 识别结果按 PDF 的 SHA256 缓存在 `data/parsed/mineru-upload/<hash>-standard-v1/`，
-相同内容共享结果；不同文件内容自动重新解析。目录包含 `middle_json.json`、`markdown.md`、原图、日志及后端逐页数据 `pages-text-v2.json`。
-检索文本不包含图片链接或 Base64 图片载荷；原图仍单独保存。旧版 `pages.json` 不再读取，优先从已保存的结构化结果重新渲染，不重复运行模型。
-只有完整成功才写入 `pages-text-v2.json`；失败不会成为可用缓存。需要同一文件重新执行模型推理时，先移走对应缓存目录再重解析。
+相同内容共享结果；不同文件内容自动重新解析。目录包含 `middle_json.json`、`markdown.md`、原图、日志及后端逐页数据 `pages-text-v3.json`。
+检索文本不包含图片链接或 Base64 图片载荷；原图仍单独保存。旧版 `pages.json`、`pages-text-v2.json` 不再读取，优先从已保存的结构化结果重新渲染，不重复运行模型。
+只有完整成功才写入 `pages-text-v3.json`；失败不会成为可用缓存。需要同一文件重新执行模型推理时，先移走对应缓存目录再重解析。
 后端页级报告保留原始页码、归一化块坐标（0–1）及产物目录。原图留在本地，没有额外公开静态资源接口。
 
 公式和表格的识别结果不等于经过核验：统一记录页级核对提示，图片另标记关系尚未文字化。
 HTML 表格和独立公式整体保留，避免切坏单元格／LaTeX；较大的单个块可能超过目标长度。
 这些提示会传播到检索片段。未增加针对课程内容的纠错规则。
+
+## 文本 LLM 标题判定
+
+默认 `PDF_TITLE_RESOLUTION=true`：使用 `DEEPSEEK_BASE_URL` 和 `DEEPSEEK_MODEL`，
+最多4页一组发送候选文字、原始块类型、归一化位置及每页最多700字符的正文。没有图片、字号、颜色或高亮数据。
+标题任务单独启用思考模式，输出预算6000 tokens；不改变聊天任务的思考配置。首次上传会增加外部 API 调用及等待时间。
+完全离线或不希望发送这些文字时设为 `false`。旧资料不会自动重建索引。
+
+worker 将未过滤的 header、paragraph_title 和页上部短文本保存在 `title_candidates`，
+逐页缓存升级为 `pages-text-v3.json`；旧文件仍保留，但不再作为新处理的输入。
+若存在 `middle_json.json` 则只重新渲染，无需重复模型识别。
+
+LLM 只返回候选块 ID，区分页面主标题、章节信息、导航与副标题。代码校验页集合、ID 来源、重复和角色冲突；
+格式或引用错误最多反馈修正一次。有效结果才写入 `titles/` 缓存，原始模型返回和拒绝原因保存在其 `attempts/` 中。
+缓存键包含候选文本、坐标、正文节选、模型、接口地址和提示版本；不包含 API 密钥。
+
+报告中的 `heading` 为页面主标题，`section_heading` 为当前章节候选，`title_resolution` 保存所选 ID、理由及判定状态。
+`section_basis=inferred` 表示根据文字推断，不能视为已识别高亮；不确定时章节为空。
+标题不确定或请求失败时不强制选择第一段正文，而是保留候选并记录警告。
+确认的标题恢复到正文，`retrieval_context` 让每个分块继承页面标题和章节依据，使向量、BM25、重排与问答使用一致上下文。
+这不是完整章节树，也尚未实现跨页父子章节关系或相邻片段扩展。
+
+仅预览指定页、不改资料库（从 `backend` 运行，按实际文件名替换）：
+
+```powershell
+python preview_pdf_titles.py 'data/uploads/example.pdf' --pages 25-28 --output ../data/parsed/title-preview
+```
+
+输出 `llm-input.json`、`result.json` 和模型响应缓存，可与原页人工核对；其中 `result.json` 包含解析页和最终分块。
 
 ## 原生提取预览
 
@@ -95,6 +124,12 @@ python reparse_documents.py
 
 脚本只处理当前数据库中登记的 PDF，保留文档 ID、文件和创建时间；成功后在事务中替换该文档的全部旧分块，
 批处理最后重建 FAISS／BM25 索引。解析失败保留原有分块并记录错误，脚本以非零状态退出。
+标题接口失败也会阻止覆盖已有分块及解析报告；这不同于模型正常返回“无法确定标题”。
+标题输出截断（`finish_reason=length`）时，从原请求重试一次，将输出上限从 6000 提高到 12000 token，
+仍要求正常结束和源块 ID 校验。有效标题缓存继续复用，无需删除 MinerU 解析产物或重新运行本地模型。
+每次请求的审计文件位于对应 MinerU 缓存的 `titles/attempts/`，截断记录包含结束原因、输出上限和接口用量信息，
+不保存模型思考原文。余额不足属于 HTTP 402，与完整性校验失败不同。
+按 Ctrl+C 后会为已提交的文档重建索引并保存进度，请等待收尾；强制结束进程可能跳过这一过程。
 备份保存在当前 SQLite 目录的 `before-mineru-<时间>/`，含 `app.db`、旧索引及 `results.json`。
 建议维护期间暂停检索和上传，避免读到批处理的中间状态；完成后重启后端，清除内存中的 BM25 缓存。
 分块内容和数量会改变，已有检索评测结果不自动重算，应在新索引上重新运行评测。

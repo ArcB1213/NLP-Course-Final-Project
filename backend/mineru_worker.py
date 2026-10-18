@@ -6,6 +6,7 @@ import sys
 from mineru import MinerUParser, ParseResult
 from mineru.parser.writer import FileBasedDataWriter
 from mineru.render.markdown import render_markdown
+from mineru.render.contracts import RenderMode
 
 
 def main():
@@ -19,6 +20,17 @@ def main():
     result = ParseResult.from_json((output / "middle_json.json").read_text(encoding="utf-8"))
     pages = []
     for page in result.pages:
+        candidates = []
+        for block in page.blocks:
+            if block.type not in {"header", "paragraph_title", "text"}:
+                continue
+            if block.type == "text" and (not block.bbox or block.bbox[1] > 0.35):
+                continue
+            candidate_page = page.model_copy(update={"blocks": [block]})
+            candidate_doc = result.middle_json.model_copy(update={"pages": [candidate_page], "is_full_document": False})
+            candidate_text = render_markdown(candidate_doc, mode=RenderMode.FULL, image_renderer=lambda b: "").strip().lstrip("# ")
+            if candidate_text and len(candidate_text) <= 600:
+                candidates.append({"block_id": block.index, "type": str(block.type), "bbox": block.bbox, "text": candidate_text})
         blocks = [block for block in page.blocks if block.type not in {"header", "footer", "page_number"}]
         body = page.model_copy(update={"blocks": blocks})
         one = result.middle_json.model_copy(update={"pages": [body], "is_full_document": False})
@@ -39,9 +51,10 @@ def main():
         pages.append({"text": text, "page": page.page_idx + 1, "metadata": {
             "heading": heading, "extraction_method": "mineru-standard-4.0.12-llama-cpp",
             "warnings": warnings, "artifact_dir": str(output.resolve()),
+            "title_candidates": candidates,
             "blocks": [{"type": block.type, "bbox": block.bbox} for block in blocks],
         }})
-    target = output / "pages-text-v2.json"
+    target = output / "pages-text-v3.json"
     temporary = target.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(pages, ensure_ascii=False, indent=2), encoding="utf-8")
     temporary.replace(target)
