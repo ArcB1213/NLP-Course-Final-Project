@@ -207,7 +207,13 @@ const memoryStatus = document.getElementById("memory-status");
 const newSessionBtn = document.getElementById("new-session");
 const clearSessionBtn = document.getElementById("clear-session");
 const clearMemoryBtn = document.getElementById("clear-memory");
+const sessionList = document.getElementById("session-list");
+const historyStatus = document.getElementById("history-status");
+const refreshSessionsBtn = document.getElementById("refresh-sessions");
 let currentSessionId = localStorage.getItem(SESSION_KEY) || "";
+let sessions = [];
+let conversationBusy = false;
+let sessionLoadFailed = false;
 
 traceToggle.checked = localStorage.getItem(TRACE_PREF_KEY) !== "false";
 traceToggle.addEventListener("change", () => {
@@ -229,6 +235,141 @@ function saveSessionId(sessionId) {
   currentSessionId = sessionId;
   localStorage.setItem(SESSION_KEY, sessionId);
   updateSessionStatus();
+  renderSessions();
+}
+
+function setConversationBusy(busy) {
+  conversationBusy = busy;
+  chatSend.disabled = busy || sessionLoadFailed;
+  chatInput.disabled = busy || sessionLoadFailed;
+  newSessionBtn.disabled = busy;
+  clearSessionBtn.disabled = busy || !currentSessionId;
+  refreshSessionsBtn.disabled = busy;
+  sessionList.querySelectorAll("button").forEach((button) => { button.disabled = busy; });
+}
+
+function formatHistoryTime(value) {
+  // The backend stores naive UTC timestamps.
+  const date = new Date(/[Zz]|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
+function renderSessions() {
+  sessionList.replaceChildren();
+  if (!sessions.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-tip";
+    empty.textContent = "暂无历史会话";
+    sessionList.appendChild(empty);
+    return;
+  }
+  sessions.forEach((session) => {
+    const item = document.createElement("li");
+    item.className = `session-item${session.id === currentSessionId ? " active" : ""}`;
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "session-open";
+    open.title = session.title;
+    open.setAttribute("aria-current", session.id === currentSessionId ? "true" : "false");
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = session.title;
+    const date = document.createElement("span");
+    date.className = "session-date";
+    date.textContent = `${formatHistoryTime(session.updated_at)} · ${session.message_count} 条消息`;
+    open.append(title, date);
+    open.addEventListener("click", () => selectSession(session.id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost icon-button danger";
+    remove.textContent = "×";
+    remove.title = `删除会话：${session.title}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.addEventListener("click", () => deleteSession(session.id));
+    open.disabled = remove.disabled = conversationBusy;
+    item.append(open, remove);
+    sessionList.appendChild(item);
+  });
+}
+
+async function refreshSessions() {
+  try {
+    const res = await fetch(`${API_BASE}/sessions`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    sessions = data.sessions;
+    renderSessions();
+    historyStatus.textContent = "";
+  } catch (err) {
+    historyStatus.textContent = `历史会话加载失败：${err.message}`;
+  }
+}
+
+function startNewSession() {
+  currentSessionId = "";
+  sessionLoadFailed = false;
+  localStorage.removeItem(SESSION_KEY);
+  chatInput.value = "";
+  updateSessionStatus();
+  clearChatLog();
+  renderSessions();
+  setConversationBusy(conversationBusy);
+}
+
+async function selectSession(sessionId) {
+  if (conversationBusy) return;
+  setConversationBusy(true);
+  historyStatus.textContent = "正在加载对话...";
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}/messages`);
+    if (!res.ok) {
+      if (res.status === 404) {
+        if (currentSessionId === sessionId) startNewSession();
+        await refreshSessions();
+      }
+      throw new Error(res.status === 404 ? "该会话已不存在" : `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    sessionLoadFailed = false;
+    saveSessionId(sessionId);
+    chatInput.value = "";
+    clearChatLog();
+    const messages = data.messages.filter((message) => ["user", "assistant"].includes(message.role));
+    if (messages.length) chatLog.replaceChildren();
+    messages.forEach((message) => {
+      const row = appendMessage(message.role === "user" ? "user" : "agent", message.content);
+      if (message.role === "assistant") renderMarkdown(row.bubble, message.content);
+      row.meta.textContent = `${message.role === "user" ? "你" : "Agent"} · ${formatHistoryTime(message.created_at)}`;
+    });
+    chatLog.scrollTop = chatLog.scrollHeight;
+    historyStatus.textContent = "";
+  } catch (err) {
+    if (currentSessionId && !chatLog.querySelector(".msg")) sessionLoadFailed = true;
+    historyStatus.textContent = `对话加载失败：${err.message}`;
+  } finally {
+    setConversationBusy(false);
+  }
+}
+
+async function deleteSession(sessionId) {
+  if (conversationBusy || !sessionId) return;
+  if (!confirm("删除此会话及其对话历史？长期记忆不会被删除。")) return;
+  setConversationBusy(true);
+  historyStatus.textContent = "正在删除会话...";
+  try {
+    const res = await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (currentSessionId === sessionId) startNewSession();
+    sessions = sessions.filter((session) => session.id !== sessionId);
+    renderSessions();
+    await refreshSessions();
+  } catch (err) {
+    historyStatus.textContent = `删除失败：${err.message}`;
+  } finally {
+    setConversationBusy(false);
+  }
 }
 
 async function refreshMemoryStatus() {
@@ -245,27 +386,18 @@ async function refreshMemoryStatus() {
 }
 
 newSessionBtn.addEventListener("click", () => {
-  currentSessionId = "";
-  localStorage.removeItem(SESSION_KEY);
-  updateSessionStatus();
-  clearChatLog();
+  if (!conversationBusy) {
+    startNewSession();
+    historyStatus.textContent = "";
+  }
 });
 
-clearSessionBtn.addEventListener("click", async () => {
-  if (!currentSessionId) {
-    clearChatLog();
-    return;
-  }
-  if (!confirm("清空当前会话历史？长期记忆不会被删除。")) return;
-  const sessionId = currentSessionId;
-  currentSessionId = "";
-  localStorage.removeItem(SESSION_KEY);
-  updateSessionStatus();
-  try {
-    await fetch(`${API_BASE}/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
-  } finally {
-    clearChatLog();
-  }
+clearSessionBtn.addEventListener("click", () => deleteSession(currentSessionId));
+refreshSessionsBtn.addEventListener("click", async () => {
+  if (conversationBusy) return;
+  setConversationBusy(true);
+  await refreshSessions();
+  setConversationBusy(false);
 });
 
 clearMemoryBtn.addEventListener("click", async () => {
@@ -284,6 +416,13 @@ clearMemoryBtn.addEventListener("click", async () => {
 
 updateSessionStatus();
 refreshMemoryStatus();
+async function initializeHistory() {
+  setConversationBusy(true);
+  await refreshSessions();
+  setConversationBusy(false);
+  if (currentSessionId) await selectSession(currentSessionId);
+}
+initializeHistory();
 
 chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
@@ -295,7 +434,7 @@ chatInput.addEventListener("keydown", (e) => {
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const query = chatInput.value.trim();
-  if (!query) return;
+  if (!query || conversationBusy || sessionLoadFailed) return;
   const taskType = document.getElementById("task-type").value;
   const topK = parseInt(document.getElementById("chat-topk").value, 10) || 5;
   const usePro = document.getElementById("use-pro").checked;
@@ -306,7 +445,7 @@ chatForm.addEventListener("submit", async (e) => {
 
   appendMessage("user", query);
   chatInput.value = "";
-  chatSend.disabled = true;
+  setConversationBusy(true);
 
   const agentMsg = appendMessage("agent", "");
   agentMsg.bubble.innerHTML = '<span class="spinner"></span> 思考中...';
@@ -323,7 +462,8 @@ chatForm.addEventListener("submit", async (e) => {
   } catch (err) {
     agentMsg.bubble.textContent = `请求失败：${err.message}`;
   } finally {
-    chatSend.disabled = false;
+    await refreshSessions();
+    setConversationBusy(false);
   }
 });
 

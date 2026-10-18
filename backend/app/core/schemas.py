@@ -105,6 +105,33 @@ class ClearResponse(BaseModel):
     deleted: int
 
 
+class SessionRead(BaseModel):
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionRead]
+
+
+class ChatMessageRead(BaseModel):
+    id: str
+    role: str
+    content: str
+    task_type: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class SessionHistoryResponse(BaseModel):
+    session_id: str
+    messages: list[ChatMessageRead]
+
+
 class AgentDecision(BaseModel):
     task_type: Literal["qa", "summary", "quiz", "grade"]
     retrieval_profile: RetrievalProfileValue = "qa"

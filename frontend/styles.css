@@ -160,6 +160,53 @@ button.ghost:hover { color: var(--text); }
 }
 .col-chat { padding: 0; margin: 0 0.5rem; }
 .col-left, .col-right { gap: 10px; }
+.col-right { overflow-y: auto; }
+
+.history-panel {
+  flex: 0 1 auto;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.history-header, .history-tools { display: flex; align-items: center; gap: 6px; }
+.history-header { justify-content: space-between; }
+.history-header .section-title { margin: 0; }
+button.ghost.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 18px;
+}
+.session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 28vh;
+  min-height: 0;
+}
+.session-item { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--border); }
+.session-item.active { background: var(--bg-soft); box-shadow: inset 2px 0 var(--accent-2); }
+.session-open {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 9px 8px;
+  border-radius: 0;
+}
+.session-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.session-date { display: block; color: var(--text-soft); font-size: 11px; margin-top: 4px; }
+.session-list .empty-tip { font-size: 12px; color: var(--text-soft); padding: 12px 0; }
+#history-status:empty { display: none; }
 
 .resizer {
   align-self: stretch;
@@ -642,6 +689,8 @@ button.ghost.danger {
   .topbar {
     position: sticky;
     top: 0;
+    flex-wrap: wrap;
+    gap: 8px;
   }
   .layout {
     grid-template-columns: 1fr;
@@ -649,5 +698,8 @@ button.ghost.danger {
   }
   .resizer { display: none; }
   .col { height: auto; max-height: 70vh; }
-  .col-chat { margin: 0; }
+  .col-chat { margin: 0; min-height: 65vh; }
+  .col-left { max-height: 55vh; }
+  .session-list { max-height: 22vh; }
+  .chat-input-row textarea { min-width: 0; }
 }

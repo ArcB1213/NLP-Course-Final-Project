@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core.schemas import ChunkCreate
@@ -120,6 +120,30 @@ def get_or_create_session(db: Session, session_id: str | None = None) -> Convers
     return session
 
 
+def list_sessions(db: Session) -> list:
+    first_question = (
+        select(func.substr(ChatMessage.content, 1, 80))
+        .where(ChatMessage.session_id == ConversationSession.id, ChatMessage.role == "user")
+        .order_by(ChatMessage.created_at, literal_column("chat_messages.rowid"))
+        .limit(1)
+        .correlate(ConversationSession)
+        .scalar_subquery()
+    )
+    message_count = (
+        select(func.count(ChatMessage.id))
+        .where(ChatMessage.session_id == ConversationSession.id)
+        .correlate(ConversationSession)
+        .scalar_subquery()
+    )
+    return list(db.execute(select(
+        ConversationSession.id,
+        func.coalesce(func.nullif(func.trim(ConversationSession.title), ""), first_question, "未命名会话").label("title"),
+        ConversationSession.created_at,
+        ConversationSession.updated_at,
+        message_count.label("message_count"),
+    ).order_by(ConversationSession.updated_at.desc(), ConversationSession.id)).mappings())
+
+
 def touch_session(db: Session, session_id: str) -> None:
     session = db.get(ConversationSession, session_id)
     if session is None:
@@ -169,6 +193,15 @@ def count_session_messages(db: Session, session_id: str) -> int:
         db.scalar(select(func.count()).select_from(ChatMessage).where(ChatMessage.session_id == session_id))
         or 0
     )
+
+
+def list_session_messages(db: Session, session_id: str) -> list[ChatMessage]:
+    # SQLite insertion order breaks timestamp ties without reordering user/assistant pairs.
+    return list(db.scalars(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at, literal_column("chat_messages.rowid"))
+    ).all())
 
 
 def get_session_messages_after(
