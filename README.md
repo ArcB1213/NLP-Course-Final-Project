@@ -321,6 +321,4 @@ http://localhost:8000/docs
 后续可继续补充：
 
 - Quiz / Grade 专用检索 profile
-- RAG 评测集和检索指标
-- OCR 文档支持
 - 章节级索引、Parent-Child 检索或文档目录结构解析，进一步增强长文档总结质量
