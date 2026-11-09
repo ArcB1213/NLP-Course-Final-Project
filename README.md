@@ -1,324 +1,153 @@
 # Course RAG Agent
 
-中文信息处理课程期末项目：基于 RAG 与任务型 Agent 的中文课程学习助手。
+基于 RAG 与任务型 Agent 的中文课程学习助手，支持上传 PDF、Markdown 和 TXT，围绕课程资料进行**问答、知识总结、练习生成与答案批改**。
 
-## 环境
+本项目来自中文信息处理课程期末实践，已实现文档入库、混合检索、任务编排、带来源的回答和评测工具，可在本地运行演示。
 
-先使用独立 conda 环境，不要在 base 环境中运行：
+[快速开始](#快速开始) · [系统流程](#系统流程) · [评测与验证](#评测与验证) · [技术文档](#技术文档)
+
+## 项目亮点
+
+| 能力 | 实现 |
+| --- | --- |
+| 文档处理 | 接入 MinerU 解析 PDF，保留页码、块坐标与标题上下文，显示解析质量提示 |
+| 混合检索 | FAISS 向量检索与 BM25 分数归一化加权融合，使用 CrossEncoder 重排 |
+| Agent 编排 | 任务路由、复合请求拆解、证据充分性判断与补检索；总结任务最多进行 3 轮覆盖式检索 |
+| 多轮交互 | 保存会话历史，以任务状态摘要压缩较早对话，并管理跨会话长期记忆 |
+| 工程支持 | FastAPI 接口、SSE 流式输出、规则回退、解析缓存与失败诊断，可通过 AgentTrace 查看执行过程 |
+| 评测工具 | 检索证据评测与人工审核，以及真实 Agent 单轮流程评测，支持断点续跑和结果导出 |
+
+前端采用 HTML、原生 JavaScript 和 CSS，由 FastAPI 静态托管；元数据、会话与记忆存储在 SQLite，向量索引使用 FAISS。
+
+## 使用场景
+
+上传相关课程资料后，可以在页面中选择任务类型，或使用自动模式：
+
+| 场景 | 输入示例 |
+| --- | --- |
+| 课程问答 | “CRF 和 HMM 的区别是什么？请结合资料解释。” |
+| 知识总结 | “总结中文分词的主要方法、优缺点和适用场景。” |
+| 复合任务 | “总结 HMM 和 CRF 的区别，并围绕它们出三道题。” |
+| 答案批改 | “题目：CRF 和 HMM 有什么区别？我的答案：HMM 是生成式模型，CRF 是判别式模型。” |
+
+回答可附带检索来源；证据不足时会补检索，或按当前规则提示无法充分回答。以上是交互示例，实际结果取决于上传资料和模型输出。
+
+## 系统流程
+
+聊天接口与流式接口共用 [AgentService](backend/app/core/agent_service.py)。下图展示基于资料的主要处理路径；会话上下文与记忆在调度前后由记忆模块管理。
+
+```mermaid
+flowchart TD
+    A["用户请求"] --> B["任务路由与子任务规划"]
+    B --> C{"检索任务"}
+    C -->|问答等任务| D["混合检索与重排"]
+    C -->|总结| E["子主题覆盖检索"]
+    D --> F["证据判断与必要时补检索"]
+    E --> G["覆盖检查与补检索，最多 3 轮"]
+    F --> H["生成回答或返回证据不足提示"]
+    G --> H
+    H --> I["答案、来源与可选执行轨迹"]
+```
+
+- **路由与规划**：显式指定问答、总结、出题或批改时优先遵循用户选择；自动模式下由 LLM 判断任务、改写 query，并按需拆分复合请求。
+- **检索与证据**：[HybridRetriever](backend/app/retrieval/retriever.py) 结合向量与关键词召回；问答偏向精确证据，总结兼顾主题覆盖和来源多样性。
+- **失败处理与追踪**：Router、Planner、EvidenceJudge 调用失败或结果无法解析时提供规则回退；可通过 AgentTrace 检查路由、检索、证据判断及工具调用。
+
+## 快速开始
+
+以下命令使用 **Windows PowerShell**，从仓库根目录运行。后端使用独立 Python 3.10 环境；MinerU 的 PDF 解析环境需另外安装。
+
+### 1. 安装后端依赖
 
 ```powershell
+git clone https://github.com/ArcB1213/NLP-Course-Final-Project.git
+cd NLP-Course-Final-Project
 conda create -n course-rag-agent python=3.10 -y
 conda activate course-rag-agent
 cd backend
 pip install -r requirements.txt
+Copy-Item .env.example .env
 ```
 
-## 后端启动
+### 2. 配置模型
 
-```powershell
-cd backend
-copy .env.example .env
-python run.py
-```
-
-启动前需要在 `backend/.env` 中配置：
+编辑 `backend/.env`，填入可用的 API 密钥：
 
 ```env
 DEEPSEEK_API_KEY=your_api_key_here
 DEEPSEEK_THINKING=false
 ```
 
-启动后访问：
+模型名、服务地址及其他选项见 [配置示例](backend/.env.example)。不要提交包含真实密钥的 `.env`。
 
-```text
-GET http://localhost:8000/api/health
-```
+首次使用先上传 Markdown 或 TXT 即可体验主要流程。**上传 PDF 前，需按 [文档解析与质量检查](docs/document-processing.md) 安装独立的 MinerU 环境与标准版模型**；默认配置下未安装会明确报错。
 
-前端页面挂在根路径，启动后端后直接打开：
+PDF 的标题判定默认调用文本 LLM，会发送候选文字、位置坐标和短正文；如需仅在本地解析 PDF，可设置 `PDF_TITLE_RESOLUTION=false`。这不会关闭聊天与评测的外部模型调用。
 
-```text
-http://localhost:8000/
-```
+### 3. 启动服务
 
-页面包含三栏布局：左侧资料库（上传 / 列表 / 删除），中间对话（流式输出，Enter 发送、Shift+Enter 换行），右侧设置（任务类型 / top_k / Pro 模型）。右上角圆形按钮可在深色 / 浅色主题之间切换。
-
-支持上传 PDF / Markdown (`.md`/`.markdown`) / TXT，单个文件默认上限 100 MB，可在 `.env` 配置 `MAX_UPLOAD_SIZE_MB` 调整。
-
-PDF 上传默认调用独立环境中的 MinerU 4.0.12 `standard` 本地解析，使用 ONNX 小模型和
-llama-cpp 视觉模型（有兼容 GPU 时通过 Vulkan 加速），识别图片表格、OCR 文字及 LaTeX 公式。
-保留原始页码、块坐标和图片产物；表格／公式仍需核对，示意图的关系尚未转为文字证据。
-图片与检索文本分开保存，图片链接及 Base64 载荷不进入分块、出题或检索上下文。
-有核对提示的文档显示“部分识别”，悬停状态可查看原因。首次解析可能需要数分钟。
-**首次使用先安装独立 MinerU 环境和标准版模型**；未安装时上传 PDF 会明确报错，不会静默退回原生提取。
-已有资料可运行 `backend/reparse_documents.py`，保留文档 ID 并替换旧分块、重建索引，自动备份数据库和索引。
-`backend/parse_document.py` 仍是原生提取预览工具；安装、配置和重解析命令见
-[文档解析与质量检查](docs/document-processing.md)。
-
-当前仍存在复杂公式识别误差，以及公式与说明被拆开后漏召回的问题；本阶段尚未完成语义分块或相邻片段扩展。
-MinerU PDF 处理默认增加文本 LLM 标题判定：把每组最多4页的候选文字、位置坐标和短正文发送到已配置的 DeepSeek 接口，
-不发送图片、颜色或高亮信息；由代码校验源块 ID 后恢复页面标题，并给分块补充标题／章节上下文。
-章节推断会明确标记；这一步尚未建立完整章节树。结果按输入、模型与提示版本缓存，失败时保留正文和候选并提示复核。
-标题请求保留思考模式；若输出达到 6000 token 上限，只重试一次并将上限提高到 12000，仍须通过完整响应与结构校验。
-诊断保存在 MinerU 缓存的 `titles/attempts/` 下，包括结束原因和截断请求的 token 用量。重解析已有分块的资料时，
-标题处理失败会保留旧分块和解析报告并报错；重跑会复用成功的解析和标题缓存，只对缺失的标题批次调用接口。
-批量脚本收到 Ctrl+C 时仍会为已经提交的资料重建索引并保存进度；请等待收尾完成，强制结束进程无法保证执行收尾。
-如需完全离线处理，可设 `PDF_TITLE_RESOLUTION=false`，只运行本地 MinerU，保留原有标题选取行为。
-运行 `cd backend`、`python -m pytest -q` 可检查自动化回归。测试覆盖解析接入、分块、缓存、失败处理及既有功能，
-其中两项真实图片渲染测试需要独立 MinerU 环境（未安装则跳过），不运行模型推理。
-这些测试不代表公式识别准确率或 RAG 回答准确率评测。
-
-## 会话摘要
-
-一轮指一条用户问题与一条助手回答。默认完成第 12 轮后首次生成摘要，此后每新增
-6 轮更新一次（第 18、24 轮等）。`backend/.env` 可配置
-`MEMORY_SUMMARY_THRESHOLD=12`、`MEMORY_SUMMARY_INTERVAL=6`、`MEMORY_RECENT_TURNS=8`。
-`MEMORY_SUMMARY_THRESHOLD` 现在按完整轮数计数，旧配置若按消息条数设置，需要调整。
-
-摘要只覆盖较早对话，保留当前任务、有效约束、必要结果的消息 ID 和未解决事项；
-不会要求模型复述整段课程知识，也不应把检索失败归因为用户薄弱点。最近 8 轮及
-两次摘要之间尚未压缩的消息保留原文。上下文超预算时按完整轮次移出，并提供历史消息目录；
-解析历史指代后可回读原文，避免依靠摘要重建题目。超长消息进入摘要前分段处理全文。
-
-摘要仍保存在 SQLite 的 `conversation_summaries.content`，格式为带版本号和更新轮次的
-任务状态 JSON；旧文本摘要会在下一次满足条件且生成成功时从原始消息重建，不继承旧摘要内容。
-摘要失败、格式不合格或输出截断不会推进覆盖位置。
-
-## 历史会话
-
-左侧“历史会话”按最近活动排序，显示首条提问（或已有会话标题）及消息数。
-选择会话会加载完整历史，并在该会话中继续对话；刷新页面会恢复上次选择。
-“+”开启新会话，每条历史右侧可删除对应会话。删除会清理该会话的消息和摘要，
-不会删除已形成的长期记忆。历史仅恢复已保存的消息正文，不包含未持久化的检索来源和决策过程。
-接口为 `GET /api/sessions`、`GET /api/sessions/{session_id}/messages` 和 `DELETE /api/sessions/{session_id}`。
-
-## 长期记忆形成
-
-明确的持续偏好、长期目标、记住要求及纠正即时检查，普通对话每新增 6 轮整理一次
-（`MEMORY_BATCH_INTERVAL=6`），允许零新增。相同含义合并或保持不变；自动薄弱点需要
-两道不同题目的高置信、带课程引文的错误作答证据。提问、资料缺失和助手失败不属于用户能力证据。
-用户自述与练习观察分别标记；最终决策 trace 显示新增、合并、删除、忽略数量和原因。
-
-未验证的历史记忆不会被普通新提问自动改写；需要人工审核或用户明确纠正。
-详见[长期记忆形成与人工核对](docs/memory-formation-review.md)。
-
-## 自动检索评测与人工审核
-
-首页点击“检索评测与审核”，或访问 `http://localhost:8000/evaluation.html`。
-支持从资料自动出题、真实检索、独立模型预标注、引文高亮、少量人工审核、断点续跑、
-JSONL 导出及固定问题的对照运行。已有评测集支持追加 1–200 道题目计划，
-保留原题与审核结果；出题时校验题干去重，重复自动重试最多 3 次。默认出题使用 `deepseek-v4-flash`，评审使用
-`deepseek-v4-pro`，页面可改模型名，`.env` 可分别设置服务地址和密钥。
-该模块评测检索证据，不改变对话流程的置信度规则；机器标签与人工标签分开统计。
-
-建议先创建 4 个问题确认配置；详细步骤、指标口径与 CLI 见
-[检索评测使用说明](docs/retrieval-evaluation.md)。
-
-## 系统端到端评测
-
-使用 `backend/evaluate_system.py` 选择多个已标注数据集或 JSONL 导出文件，执行真实
-Agent 单轮问答流程，独立评审答案的相关性、证据支持与关键点覆盖。
-支持按人工审核/测试分组筛选、共享问题去重、断点续跑、分数据集报告及结果导出。
-详见[系统端到端评测说明](docs/system-evaluation.md)。
-
-## 当前阶段
-
-后端已完成可演示的 RAG + 轻量 Agentic RAG 闭环：
-
-- FastAPI 后端骨架
-- PDF / Markdown / TXT 上传、解析、分块、入库
-- sentence-transformers embedding
-- FAISS 向量检索
-- BM25 + 向量混合检索
-- CrossEncoder reranker
-- DeepSeek API RAG 问答
-- 引用来源返回
-- `/api/search` 检索调试接口
-- 低置信度问答拒答
-- `RouterAgent`：显式任务优先，`task_type=auto` 时使用 LLM 判断任务类型、检索策略和改写 query
-- `AgentPlanner`：自动模式下可将复合请求拆成多个子任务，例如“总结 + 出题”
-- `EvidenceJudge`：检索后判断证据是否充分，不足时触发二次 query 改写与再检索
-- `SummaryCoveragePlanner`：总结任务会先规划复习子主题，并最多进行 3 轮覆盖式检索
-- `AgentTrace`：可选返回路由、规划、检索、证据判断、工具调用等决策过程
-- `QATool`、`SummaryTool`、`QuizTool`、`GradingTool`
-- 统一 `AgentService` 调度入口：`route -> plan -> retrieve -> judge -> retry/coverage retrieve -> tool generate`
-- `/api/chat/stream` SSE 流式输出，前端逐字渲染
-- DeepSeek 输出被截断时自动续写，降低回答停在半句话的问题
-- 删除文档后显式清理分块和孤儿 chunk，避免旧资料继续污染检索结果
-- 单页前端（HTML + 原生 JS），由 FastAPI 静态托管
-- 实现了Agent的多轮记忆功能，分为短期记忆（保存一定对话轮次）和长期记忆（跨对话保存），并在 AgentTrace 中记录记忆内容和使用情况，方便调试和分析。
-
-## 检索配置
-
-默认开启 reranker：
-
-```env
-ENABLE_RERANKER=true
-RERANKER_MODEL=BAAI/bge-reranker-base
-VECTOR_TOP_K=10
-BM25_TOP_K=10
-FINAL_TOP_K=5
-SUMMARY_FINAL_TOP_K=10
-VECTOR_WEIGHT=0.6
-BM25_WEIGHT=0.4
-```
-
-第一次检索会下载 embedding / reranker 模型，耗时会明显更长。
-
-## QA 与 Summary 检索策略
-
-系统现在会在检索阶段区分问答和总结：
-
-- `qa`：精确检索，候选较少，适合回答具体问题。
-- `summary`：使用复习覆盖规划器生成子主题 query，最多进行 3 轮覆盖式检索，并做来源和内容多样性筛选，适合知识点梳理。
-- `default`：用于普通检索调试，行为接近基础混合检索。
-
-## Agentic RAG 流程
-
-`/api/chat` 和 `/api/chat/stream` 共用同一套 Agent 执行逻辑：
-
-```text
-用户问题
-  ↓
-RouterAgent 判断任务类型、检索 profile、改写 query
-  ↓
-AgentPlanner 判断是否需要拆成多个子任务
-  ↓
-HybridRetriever 初次检索 / Summary 覆盖检索
-  ↓
-EvidenceJudge 或 SummaryCoveragePlanner 判断证据是否充分
-  ↓
-证据不足时进行 query 扩展 / 改写并继续检索
-  ↓
-调用 QA / Summary / Quiz / Grading 工具生成回答
-  ↓
-返回答案、引用来源和可选 AgentTrace
-```
-
-任务路由支持两种方式：
-
-- 显式任务：前端或调用方传 `task_type="qa" / "summary" / "quiz" / "grade"`，系统尊重用户选择。
-- 自动任务：传 `task_type="auto"`，系统调用 DeepSeek Flash 作为 Router Agent，输出任务类型、检索策略和改写后的检索 query。
-
-如果 LLM Router / Planner / EvidenceJudge 调用失败或输出无法解析，系统会自动回退到规则逻辑，保证接口可用。
-
-如需查看 Agent 决策过程，可在请求中加入：
-
-```json
-{
-  "extra_context": {
-    "debug_agent_trace": true
-  }
-}
-```
-
-返回中的 `agent_trace.steps` 会记录 `route`、`plan`、`retrieve`、`judge_evidence`、`retrieve_retry`、`retrieve_round_1/2/3`、`summary_coverage_judge_*`、`summary_coverage_stop`、`tool_generate` 等步骤。
-
-## 接口测试
-
-健康检查：
+继续在 `backend` 目录中运行：
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/api/health
+python run.py
 ```
 
-上传文件：
+| 入口 | 地址 |
+| --- | --- |
+| 学习助手 | http://localhost:8000/ |
+| 检索评测与审核 | http://localhost:8000/evaluation.html |
+| Swagger API 文档 | http://localhost:8000/docs |
+| 健康检查 | http://localhost:8000/api/health |
+
+在左侧上传资料，中间输入问题，右侧选择任务类型、top_k 或 Pro 模型。支持流式回答、历史会话和深浅主题切换。
+
+单文件默认上限为 100 MB。首次检索会下载 embedding / reranker 模型，首次 PDF 解析也可能需要较长时间。
+
+## 评测与验证
+
+项目提供不同层次的验证入口，避免把功能测试或机器评分当作实际回答准确率：
+
+| 层次 | 验证内容 | 入口 |
+| --- | --- | --- |
+| 自动化回归 | 解析、分块、缓存、失败处理、会话、记忆与评测模块等行为 | `backend/tests/` |
+| 检索评测 | 从资料出题、执行真实检索、模型预标注、引文核对与人工审核；机器标签和人工标签分开统计 | [检索评测说明](docs/retrieval-evaluation.md) |
+| 单轮系统评测 | 调用与聊天 API 相同的 Agent 流程，评审答案相关性、证据支持和关键点覆盖，并记录耗时与轨迹 | [系统评测说明](docs/system-evaluation.md) |
+
+运行自动化回归：
 
 ```powershell
-curl.exe -F "files=@D:\NLP-CourseWork\test.md" http://localhost:8000/api/documents/upload
+# 在 backend 目录中运行
+python -m pytest -q
 ```
 
-检索测试：
+测试不代表公式识别或回答准确率；部分真实图片渲染测试需要独立 MinerU 环境，未安装时跳过。系统评测针对独立单轮问题，关闭会话记忆，不覆盖多轮记忆、HTTP/SSE 传输或浏览器性能。LLM 辅助评分也不等同于经过人工校准的正确率。
 
-```powershell
-$body = @{ query = "什么是条件随机场？"; top_k = 5; profile = "qa" } | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/search -Method Post -ContentType "application/json" -Body $body
-```
+## 核心目录
 
-总结检索测试：
+| 路径 | 职责 |
+| --- | --- |
+| [backend/app/core/](backend/app/core/) | Agent 编排、路由、规划、证据判断、模型调用与记忆 |
+| [backend/app/document/](backend/app/document/) | 文档解析、标题处理、分块和入库 |
+| [backend/app/retrieval/](backend/app/retrieval/) | 向量索引、BM25、混合检索和重排 |
+| [backend/app/tools/](backend/app/tools/) | 问答、总结、出题与批改 |
+| [backend/app/evaluation/](backend/app/evaluation/) | 检索及系统评测 |
+| [backend/tests/](backend/tests/) | 自动化回归测试 |
+| [frontend/](frontend/) | 学习助手与评测审核页面 |
+| [docs/](docs/) | 安装、使用、实现边界和评测说明 |
 
-```powershell
-$body = @{ query = "总结一下中文分词的主要方法"; top_k = 10; profile = "summary" } | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/search -Method Post -ContentType "application/json" -Body $body
-```
+## 当前局限与后续方向
 
-RAG 问答：
+- 复杂公式、表格仍需人工核对；示意图中的关系尚未完整转为可检索的文字证据。
+- 公式与说明分开后可能漏召回；尚未完成语义分块、相邻片段扩展或完整章节树。
+- 长期记忆与自动批改仍依赖模型判断，需要结合真实样例审核；现有单轮系统评测不能证明多轮记忆效果。
+- 后续重点包括章节级 / Parent-Child 检索，以及 Quiz / Grade 专用检索策略与相应效果评测。
 
-```powershell
-$body = @{
-  query = "什么是条件随机场？"
-  task_type = "qa"
-  use_pro_model = $false
-  top_k = 5
-} | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
-```
+## 技术文档
 
-RAG 总结：
+- [文档解析与质量检查](docs/document-processing.md)：MinerU 安装、标题判定、缓存、重解析与排错。
+- [会话历史与摘要](docs/conversation-memory.md)：摘要配置、上下文保留、历史会话与旧数据兼容。
+- [长期记忆形成与人工核对](docs/memory-formation-review.md)：写入依据、证据门槛及人工验收情形。
+- [检索配置与接口调试](docs/usage-and-debugging.md)：检索参数、AgentTrace 和 PowerShell 调用示例。
+- [API 说明](docs/api.md)：上传、检索、聊天和流式接口。
+- [检索评测](docs/retrieval-evaluation.md) / [系统评测](docs/system-evaluation.md)：运行步骤、统计口径和结果导出。
 
-```powershell
-$body = @{
-  query = "总结自动分词的主要知识"
-  task_type = "summary"
-  use_pro_model = $false
-} | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
-```
-
-自动任务路由：
-
-```powershell
-$body = @{
-  query = "围绕 HMM 和 CRF 的区别出三道题"
-  task_type = "auto"
-  use_pro_model = $false
-} | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
-```
-
-答案批改：
-
-```powershell
-$body = @{
-  query = "题目：CRF 和 HMM 有什么区别？`n我的答案：HMM 是生成式模型，CRF 是判别式模型。"
-  task_type = "grade"
-} | ConvertTo-Json
-Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
-```
-
-查看 Agent 决策过程：
-
-```powershell
-$body = @{
-  query = "总结 HMM 和 CRF 的区别，并围绕它们出三道题"
-  task_type = "auto"
-  top_k = 8
-  extra_context = @{ debug_agent_trace = $true }
-} | ConvertTo-Json -Depth 5
-Invoke-RestMethod -Uri http://localhost:8000/api/chat -Method Post -ContentType "application/json" -Body $body
-```
-
-流式输出：
-
-```powershell
-$body = @{
-  query = "总结自动分词的主要知识"
-  task_type = "summary"
-  top_k = 8
-} | ConvertTo-Json
-curl.exe -N -H "Content-Type: application/json" -d $body http://localhost:8000/api/chat/stream
-```
-
-选择题批改会优先判断学生所选选项是否是题干给定选项中的最佳答案；课程资料中的更完整知识列表只作为补充说明，不会直接导致正确选项被判为“部分正确”。
-
-也可以打开 Swagger 页面测试：
-
-```text
-http://localhost:8000/docs
-```
-
-## 下一步
-
-后续可继续补充：
-
-- Quiz / Grade 专用检索 profile
-- 章节级索引、Parent-Child 检索或文档目录结构解析，进一步增强长文档总结质量
